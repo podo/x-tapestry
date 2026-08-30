@@ -422,7 +422,7 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, false);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 12);
+  assert.strictEqual(pluginConfig.version, 13);
   const sourceModeInput = uiConfig.inputs.find(input => input.name === "source_mode");
   assert.ok(sourceModeInput.choices.includes("Following Feed"));
   assert.ok(sourceModeInput.choices.includes("Individual Accounts"));
@@ -506,8 +506,7 @@ async function run() {
 
   const constructorIdentity = makeContext({
     Identity: {
-      create: (name, username, avatar, uri) => ({ name, username, avatar, uri }),
-      createWithName: () => { throw new Error("createWithName should not be used when Identity.create is available"); }
+      create: (name, username, avatar, uri) => ({ name, username, avatar, uri })
     }
   });
   vm.runInContext("load()", constructorIdentity);
@@ -520,7 +519,7 @@ async function run() {
     uri: "https://x.com/openai"
   });
 
-  const initialState = JSON.parse(context._state.get("syncStateV12"));
+  const initialState = JSON.parse(context._state.get("syncStateV13"));
   assert.strictEqual(initialState.highWaterBySource["handle:openai"], "1950000000000000001");
   assert.strictEqual(initialState.highWaterBySource["handle:sama"], "1950000000000000001");
 
@@ -533,7 +532,7 @@ async function run() {
   assert.ifError(context.error);
   assert.strictEqual(context.results.length, 1);
   assert.strictEqual(context.results[0].uri, "https://x.com/openai/status/1950000000000000003");
-  const nextState = JSON.parse(context._state.get("syncStateV12"));
+  const nextState = JSON.parse(context._state.get("syncStateV13"));
   assert.strictEqual(nextState.highWaterBySource["handle:openai"], "1950000000000000003");
   assert.strictEqual(nextState.highWaterBySource["handle:sama"], "1950000000000000003");
 
@@ -639,7 +638,7 @@ async function run() {
   assert.strictEqual(homeLoadVariables.requestContext, "launch");
   assert.strictEqual(homeLoadVariables.withCommunity, true);
   assert.strictEqual(homeLoadVariables.enableRanking, false);
-  assert.deepStrictEqual(JSON.parse(following._state.get("syncStateV12")).highWaterBySource.following, "1950000000000000022");
+  assert.deepStrictEqual(JSON.parse(following._state.get("syncStateV13")).highWaterBySource.following, "1950000000000000022");
 
   const wrapped = makeContext({
     timeline: timelineBody([{ tweet: tweetResult({ id: "1950000000000000004" }) }]),

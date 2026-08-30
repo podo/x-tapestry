@@ -12,7 +12,7 @@ const defaultTweetDetailQueryId = "97JF30KziU00483E_8elBA";
 const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
-const syncStateKey = "syncStateV12";
+const syncStateKey = "syncStateV13";
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
@@ -1760,20 +1760,25 @@ function tweetIdentity(tweet) {
 }
 
 function createIdentity(name, username, avatar, uri) {
-  if (typeof Identity !== "undefined" && typeof Identity.create === "function") {
+  // Property assignment is the most compatible path across Loom API versions.
+  if (typeof Identity !== "undefined" && typeof Identity.createWithName === "function") {
     try {
-      return Identity.create(name, username || null, avatar || null, uri || null);
+      const identity = Identity.createWithName(name);
+      if (username) identity.username = username;
+      if (avatar) identity.avatar = avatar;
+      if (uri) identity.uri = uri;
+      return identity;
     }
     catch (error) {
-      // Fall back to the property-based API used by older Loom runtimes.
+      // Fall through to the positional constructor if this runtime only partially supports the API.
     }
   }
 
-  const identity = Identity.createWithName(name);
-  if (username) identity.username = username;
-  if (avatar) identity.avatar = avatar;
-  if (uri) identity.uri = uri;
-  return identity;
+  if (typeof Identity !== "undefined" && typeof Identity.create === "function") {
+    return Identity.create(name, username || null, avatar || null, uri || null);
+  }
+
+  throw new Error("Loom does not provide an Identity constructor.");
 }
 
 function tweetAnnotations(tweet) {

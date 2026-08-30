@@ -18,7 +18,7 @@ The mocked suite verifies:
 - Home feed parsing from `data.home.home_timeline_urt.instructions`
 - Promoted home-feed entries are filtered before rendering
 - Incremental sync state and connector version bumps
-- Author identity fields: name, username, URI, and avatar, including the constructor path used by current Loom
+- Author identity fields: name, username, URI, and avatar, including the property-assignment path used by current Loom and the positional-constructor fallback
 - Stable X profile-image URLs, including the newer `avatar.image_url` field
 - Post body escaping, linkification, and media/preview URL removal
 - Legacy and modern X media entities for photos, videos, GIF thumbnails, poll, quoted-post, and metric annotations
