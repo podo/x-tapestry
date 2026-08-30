@@ -11,11 +11,15 @@ const defaultTweetDetailQueryId = "97JF30KziU00483E_8elBA";
 const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
-const syncStateKey = "syncStateV3";
+const syncStateKey = "syncStateV4";
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
+const linkPreviewCacheKey = "linkPreviewCacheV1";
 const transactionCacheTtlMilliseconds = 15 * 60 * 1000;
 const queryIdCacheTtlMilliseconds = 24 * 60 * 60 * 1000;
+const linkPreviewCacheTtlMilliseconds = 7 * 24 * 60 * 60 * 1000;
+const maximumLinkPreviewBytes = 256 * 1024;
+const maximumLinkPreviewCacheEntries = 100;
 const maximumIncrementalPages = 5;
 const maximumQueryIdScripts = 40;
 const transactionKeyword = "obfiowerehiring";
@@ -186,7 +190,7 @@ async function loadSearchTimeline(credentials) {
   }
 
   writeSyncState(syncState);
-  return sortTweetsNewestFirst(dedupeTweets(tweets)).map(tweetToItem);
+  return tweetsToItems(tweets);
 }
 
 async function loadHandleTimelines(credentials) {
@@ -233,7 +237,50 @@ async function loadHandleTimelines(credentials) {
   }
 
   writeSyncState(syncState);
-  return sortTweetsNewestFirst(dedupeTweets(tweets)).map(tweetToItem);
+  return tweetsToItems(tweets);
+}
+
+async function tweetsToItems(tweets) {
+  const normalized = sortTweetsNewestFirst(dedupeTweets(tweets));
+  const items = [];
+  for (const tweet of normalized) {
+    await enrichTweetLinkCard(tweet);
+    items.push(tweetToItem(tweet));
+  }
+  return items;
+}
+
+async function enrichTweetLinkCard(tweet) {
+  if (!tweet) return;
+  if (tweet.quoted) await enrichTweetLinkCard(tweet.quoted);
+  if (!fetchLinkPreviews()) return;
+
+  const card = linkCardForTweet(tweet);
+  if (!card || !cardNeedsPreview(card)) return;
+
+  const preview = await linkPreviewForUrl(card.url);
+  if (!preview) return;
+
+  const current = tweet.card || {};
+  tweet.card = {
+    url: current.url || card.url,
+    type: current.type || preview.type || card.type || "website",
+    title: current.title || preview.title || card.title || "",
+    subtitle: current.subtitle || preview.subtitle || card.subtitle || "",
+    siteName: current.siteName || preview.siteName || card.siteName || urlHost(card.url) || "",
+    authorName: current.authorName || preview.authorName || card.authorName || "",
+    image: current.image || preview.image || card.image || null,
+    aspectSize: current.aspectSize || preview.aspectSize || card.aspectSize || null,
+    hiddenUrls: dedupeStrings((current.hiddenUrls || card.hiddenUrls || [card.url]).concat(preview.hiddenUrls || []))
+  };
+}
+
+function cardNeedsPreview(card) {
+  return Boolean(
+    card
+    && isExternalWebUrl(card.url)
+    && (!card.title || !card.subtitle || !card.image || !card.siteName)
+  );
 }
 
 async function searchTimelinePage(query, count, cursor, credentials) {
@@ -350,7 +397,7 @@ async function tweetDetailItems(tweetId, credentials) {
   );
 
   const tweets = dedupeTweets(extractTweetsFromInstructions(tweetDetailInstructions(data)));
-  const items = tweets.map(tweetToItem);
+  const items = await tweetsToItems(tweets);
   if (items.length > 0) return items;
   throw new Error("X did not return a conversation for this post.");
 }
@@ -452,7 +499,7 @@ async function requestText(url, method, body, headers, action) {
     text = await sendRequest(url, method, body, headers, true);
   }
   catch (error) {
-    throw normalizedRequestError(error);
+    throw normalizedRequestError(error, action);
   }
 
   const wrapped = statusWrappedResponse(text);
@@ -479,21 +526,24 @@ function statusWrappedResponse(text) {
 }
 
 function statusError(status, body, headers, action) {
-  let message = `X returned HTTP ${status}.`;
-  if (status === 400) {
+  let message = action === "LinkPreview"
+    ? `Link preview returned HTTP ${status}.`
+    : `X returned HTTP ${status}.`;
+  if (status === 400 && action !== "LinkPreview") {
     message = `X rejected the ${action || "GraphQL"} request. The query ID may have rotated; update the advanced ${action || "GraphQL"} query ID.`;
   }
-  else if (status === 401 || status === 403) {
+  else if ((status === 401 || status === 403) && action !== "LinkPreview") {
     message = "X rejected the session cookies. Refresh auth_token and ct0 from a logged-in x.com session.";
   }
   else if (status === 429) {
     const retryAfter = headerValue(headers, "retry-after");
     const reset = headerValue(headers, "x-rate-limit-reset");
+    const source = action === "LinkPreview" ? "Link preview" : "X";
     message = retryAfter
-      ? `X rate limit reached. Try again in ${retryAfter} seconds.`
+      ? `${source} rate limit reached. Try again in ${retryAfter} seconds.`
       : reset
-        ? `X rate limit reached. Try again after ${new Date(Number(reset) * 1000).toISOString()}.`
-        : "X rate limit reached. Try again later.";
+        ? `${source} rate limit reached. Try again after ${new Date(Number(reset) * 1000).toISOString()}.`
+        : `${source} rate limit reached. Try again later.`;
   }
 
   const detail = firstGraphqlErrorMessage(body);
@@ -504,11 +554,11 @@ function statusError(status, body, headers, action) {
   return error;
 }
 
-function normalizedRequestError(error) {
+function normalizedRequestError(error, action) {
   const message = error && error.message ? error.message : String(error);
-  if (/\b(401|403)\b/.test(message)) return statusError(401);
-  if (/\b429\b/.test(message)) return statusError(429);
-  if (/\b400\b/.test(message)) return statusError(400);
+  if (/\b(401|403)\b/.test(message)) return statusError(401, null, null, action);
+  if (/\b429\b/.test(message)) return statusError(429, null, null, action);
+  if (/\b400\b/.test(message)) return statusError(400, null, null, action);
   return error instanceof Error ? error : new Error(message);
 }
 
@@ -715,16 +765,7 @@ function normalizeUserProfile(rawUser) {
   const legacy = user && user.legacy ? user.legacy : {};
   const username = core.screen_name || legacy.screen_name || null;
   const name = core.name || legacy.name || username;
-  const avatar = normalizedAvatar(
-    core.profile_image_url
-    || core.profile_image_url_https
-    || legacy.profile_image_url_https
-    || legacy.profile_image_url
-    || (user && user.avatar && user.avatar.image_url)
-    || (user && user.avatar && user.avatar.image_url_https)
-    || (user && user.avatar && user.avatar.imageUrl)
-    || (user && user.avatar && user.avatar.url)
-  );
+  const avatar = normalizedAvatar(userAvatarUrl(user, core, legacy));
   const id = (user && user.rest_id)
     || (user && user.id_str)
     || core.id_str
@@ -738,6 +779,18 @@ function normalizeUserProfile(rawUser) {
     url: username ? `https://x.com/${username}` : null,
     protected: Boolean(legacy.protected)
   };
+}
+
+function userAvatarUrl(user, core, legacy) {
+  const avatar = user && user.avatar ? user.avatar : {};
+  return avatar.image_url
+    || avatar.image_url_https
+    || avatar.imageUrl
+    || avatar.url
+    || core.profile_image_url
+    || core.profile_image_url_https
+    || legacy.profile_image_url_https
+    || legacy.profile_image_url;
 }
 
 function expandedTweetText(fullText, legacyEntities, note, mappings) {
@@ -896,6 +949,8 @@ function normalizedPhotoUrl(value) {
 
 function extractCard(result, externalUrls, mappings) {
   const values = cardBindingValues(result);
+  if (Object.keys(values).length === 0) return null;
+
   const url = firstExternalCardUrl(values, mappings) || firstExternalUrl(externalUrls);
   if (!isExternalWebUrl(url)) return null;
 
@@ -921,7 +976,7 @@ function extractCard(result, externalUrls, mappings) {
     "publisher",
     "publisher_name",
     "vanity_url"
-  ]) || urlHost(url);
+  ]);
   const authorName = firstCardText(values, [
     "author_name",
     "author",
@@ -1308,6 +1363,185 @@ function linkCardForTweet(tweet) {
   };
 }
 
+async function linkPreviewForUrl(url) {
+  if (!isExternalWebUrl(url)) return null;
+
+  const cached = readLinkPreview(url);
+  if (cached) return cached;
+
+  try {
+    const text = await requestText(url, "GET", null, linkPreviewHeaders(), "LinkPreview");
+    const preview = parseLinkPreview(text, url);
+    if (preview && preview.hasMetadata) {
+      delete preview.hasMetadata;
+      writeLinkPreview(url, preview);
+      return preview;
+    }
+  }
+  catch (error) {
+    console.log(`Unable to fetch link preview for ${url}: ${error.message || error}`);
+  }
+
+  return null;
+}
+
+function linkPreviewHeaders() {
+  return {
+    "User-Agent": browserUserAgent,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Range": `bytes=0-${maximumLinkPreviewBytes - 1}`
+  };
+}
+
+function parseLinkPreview(text, pageUrl) {
+  const html = String(text || "");
+  const values = htmlMetaValues(html);
+  const rawImage = firstMetaValue(values, [
+    "twitter:image",
+    "twitter:image:src",
+    "og:image:secure_url",
+    "og:image:url",
+    "og:image",
+    "image"
+  ]);
+  const image = rawImage ? absoluteUrl(rawImage, pageUrl) : null;
+  const width = finiteNumber(firstMetaValue(values, ["twitter:image:width", "og:image:width"]));
+  const height = finiteNumber(firstMetaValue(values, ["twitter:image:height", "og:image:height"]));
+  const title = firstMetaValue(values, ["twitter:title", "og:title"]) || htmlTitle(html);
+  const subtitle = firstMetaValue(values, ["twitter:description", "og:description", "description"]);
+  const siteName = stripLeadingAt(firstMetaValue(values, ["og:site_name", "twitter:site", "application-name"]));
+  const authorName = stripLeadingAt(firstMetaValue(values, ["twitter:creator", "author", "article:author"]));
+  const validImage = isWebUrl(image) ? image : null;
+  const hasMetadata = Boolean(title || subtitle || siteName || authorName || validImage);
+
+  return {
+    url: pageUrl,
+    type: linkPreviewType(values),
+    title,
+    subtitle,
+    siteName: siteName || (hasMetadata ? urlHost(pageUrl) : ""),
+    authorName,
+    image: validImage,
+    aspectSize: width > 0 && height > 0 ? { width, height } : null,
+    hasMetadata
+  };
+}
+
+function htmlMetaValues(html) {
+  const values = {};
+  const tags = String(html || "").match(/<meta\b[^>]*>/gi) || [];
+
+  for (const tag of tags) {
+    const key = attributeValue(tag, "property") || attributeValue(tag, "name") || attributeValue(tag, "itemprop");
+    const content = attributeValue(tag, "content");
+    if (!key || !content) continue;
+
+    const normalizedKey = String(key).trim().toLowerCase();
+    if (!values[normalizedKey]) values[normalizedKey] = [];
+    values[normalizedKey].push(normalizedWhitespace(content));
+  }
+
+  return values;
+}
+
+function firstMetaValue(values, keys) {
+  for (const key of keys) {
+    const options = values[String(key).toLowerCase()];
+    if (!Array.isArray(options)) continue;
+    const value = options.find(candidate => normalizedWhitespace(candidate));
+    if (value) return normalizedWhitespace(value);
+  }
+  return "";
+}
+
+function htmlTitle(html) {
+  const match = String(html || "").match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+  if (!match) return "";
+  return normalizedWhitespace(htmlDecode(match[1].replace(/<[^>]+>/g, "")));
+}
+
+function linkPreviewType(values) {
+  const twitterCard = firstMetaValue(values, ["twitter:card"]).toLowerCase();
+  const ogType = firstMetaValue(values, ["og:type"]).toLowerCase();
+  if (/player/.test(twitterCard) || /video/.test(ogType)) return "video.other";
+  if (/audio/.test(twitterCard) || /audio/.test(ogType)) return "audio.other";
+  if (/photo/.test(twitterCard) || /^image\b/.test(ogType)) return "image";
+  return "website";
+}
+
+function absoluteUrl(value, baseUrl) {
+  if (!value) return null;
+  try {
+    return new URL(value, baseUrl).toString();
+  }
+  catch (error) {
+    return value;
+  }
+}
+
+function stripLeadingAt(value) {
+  return normalizedWhitespace(value).replace(/^@/, "");
+}
+
+function normalizedWhitespace(value) {
+  return htmlDecode(String(value || "").replace(/\s+/g, " ").trim());
+}
+
+function readLinkPreview(url) {
+  const cache = readLinkPreviewCache();
+  const entry = cache[linkPreviewCacheUrl(url)];
+  if (!entry || !entry.preview || typeof entry.preview !== "object") return null;
+  if (!entry.builtAt || Date.now() - Number(entry.builtAt) >= linkPreviewCacheTtlMilliseconds) return null;
+  return entry.preview;
+}
+
+function writeLinkPreview(url, preview) {
+  if (!preview || typeof preview !== "object") return;
+  const cache = readLinkPreviewCache();
+  cache[linkPreviewCacheUrl(url)] = {
+    builtAt: Date.now(),
+    preview
+  };
+  safeSetItem(linkPreviewCacheKey, JSON.stringify(pruneLinkPreviewCache(cache)));
+}
+
+function readLinkPreviewCache() {
+  const stored = safeGetItem(linkPreviewCacheKey);
+  if (!stored) return {};
+  try {
+    const parsed = JSON.parse(stored);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  }
+  catch (error) {
+    return {};
+  }
+}
+
+function pruneLinkPreviewCache(cache) {
+  const now = Date.now();
+  const entries = Object.keys(cache || {})
+    .map(key => ({ key, entry: cache[key] }))
+    .filter(item => (
+      item.entry
+      && item.entry.preview
+      && item.entry.builtAt
+      && now - Number(item.entry.builtAt) < linkPreviewCacheTtlMilliseconds
+    ))
+    .sort((left, right) => Number(right.entry.builtAt) - Number(left.entry.builtAt))
+    .slice(0, maximumLinkPreviewCacheEntries);
+
+  const pruned = {};
+  for (const item of entries) {
+    pruned[item.key] = item.entry;
+  }
+  return pruned;
+}
+
+function linkPreviewCacheUrl(url) {
+  return normalizedUrlForCompare(url) || String(url || "");
+}
+
 function hasRenderableMedia(tweet) {
   return Boolean(
     showMedia()
@@ -1392,6 +1626,7 @@ function currentSyncSignature(query) {
     showMetrics: showMetrics(),
     showMedia: showMedia(),
     showLinkCards: showLinkCards(),
+    fetchLinkPreviews: fetchLinkPreviews(),
     batchSize: normalizedBatchSize(),
     searchQueryId: normalizedSearchQueryId(),
     userByScreenNameQueryId: normalizedUserByScreenNameQueryId(),
@@ -1588,6 +1823,10 @@ function showMedia() {
 
 function showLinkCards() {
   return normalizedChoice(stringInput("show_link_cards")) !== "off";
+}
+
+function fetchLinkPreviews() {
+  return normalizedChoice(stringInput("fetch_link_previews")) !== "off";
 }
 
 function useTransactionHeader() {
@@ -2019,27 +2258,24 @@ function formatCount(value) {
 function normalizedAvatar(value) {
   if (!isWebUrl(value)) return null;
 
-  const raw = String(value);
+  const raw = String(value).trim();
   try {
     const url = new URL(raw);
     if (/twimg\.com$/i.test(url.hostname) && url.pathname.indexOf("/profile_images/") >= 0) {
-      if (url.searchParams.has("name")) {
-        url.searchParams.set("name", "400x400");
+      const path = url.pathname.replace(/_(normal|bigger|mini|200x200|400x400)(\.[^/.]+)$/i, "$2");
+      if (path !== url.pathname) url.pathname = path;
+      if (/\.[A-Za-z0-9]+$/.test(url.pathname)) {
+        url.search = "";
         return url.toString();
       }
-
-      const path = url.pathname.replace(/_(normal|bigger|mini|200x200)(\.[^/.]+)$/i, "_400x400$2");
-      if (path !== url.pathname) {
-        url.pathname = path;
-        return url.toString();
-      }
+      return url.toString();
     }
   }
   catch (error) {
-    return raw.replace(/_(normal|bigger|mini|200x200)(\.[^/.]+)$/i, "_400x400$2");
+    return raw.replace(/_(normal|bigger|mini|200x200|400x400)(\.[^/.]+)$/i, "$2");
   }
 
-  return raw.replace(/_(normal|bigger|mini|200x200)(\.[^/.]+)$/i, "_400x400$2");
+  return raw.replace(/_(normal|bigger|mini|200x200|400x400)(\.[^/.]+)$/i, "$2");
 }
 
 function isExternalWebUrl(value) {

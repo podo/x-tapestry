@@ -42,7 +42,9 @@ function tweetResult(overrides = {}) {
   const id = overrides.id || "1950000000000000001";
   const username = overrides.username || "openai";
   const fullText = overrides.fullText || "Hello <world>\nhttps://t.co/a";
-  const profileImageUrl = overrides.profile_image_url || `https://pbs.twimg.com/profile_images/${username}_normal.jpg`;
+  const profileImageUrl = Object.prototype.hasOwnProperty.call(overrides, "profile_image_url")
+    ? overrides.profile_image_url
+    : `https://pbs.twimg.com/profile_images/${username}_normal.jpg`;
   const legacy = {
     id_str: id,
     full_text: fullText,
@@ -232,6 +234,7 @@ function makeContext(overrides = {}) {
     show_metrics: "on",
     show_media: "on",
     show_link_cards: "on",
+    fetch_link_previews: "on",
     batch_size: "20",
     use_transaction_header: "on",
     search_query_id: "Bcw3RzK-PatNAmbnw54hFw",
@@ -242,12 +245,17 @@ function makeContext(overrides = {}) {
     timeline: timelineBody([tweetResult()]),
     userTimeline: null,
     threadTimeline: null,
+    linkPreviews: {},
     accountSettings: { screen_name: "podo", name: "Podo" },
     sendRequest: async (url, method, parameters, headers) => {
       calls.push({ url, method, parameters, headers });
       if (url === "https://x.com/") return makeHomeHtml();
       if (url.includes("ondemand.s.abcdefa.js")) return ondemandJs;
       if (url.includes("/account/settings.json")) return JSON.stringify(context.accountSettings);
+      if (Object.prototype.hasOwnProperty.call(context.linkPreviews, url)) return context.linkPreviews[url];
+      if (/^https?:\/\//.test(url) && !/https:\/\/(x\.com|abs\.twimg\.com)\//.test(url)) {
+        return "<html></html>";
+      }
       const action = graphqlAction(url);
       if (action === "UserByScreenName") {
         const variables = JSON.parse(new URL(url).searchParams.get("variables"));
@@ -335,8 +343,9 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 3);
+  assert.strictEqual(pluginConfig.version, 4);
   assert.ok(uiConfig.inputs.some(input => input.name === "x_sources"));
+  assert.ok(uiConfig.inputs.some(input => input.name === "fetch_link_previews"));
   assert.ok(uiConfig.inputs.some(input => input.name === "user_by_screen_name_query_id"));
   assert.ok(uiConfig.inputs.some(input => input.name === "user_tweets_query_id"));
   assert.ok(uiConfig.inputs.some(input => input.name === "tweet_detail_query_id"));
@@ -356,7 +365,7 @@ async function run() {
   assert.ifError(context.error);
   assert.strictEqual(context.verification.displayName, "X - @openai, @sama");
   assert.strictEqual(context.verification.accountIdentity.username, "@podo");
-  assert.match(context.verification.accountIdentity.avatar, /podo_400x400\.jpg$/);
+  assert.match(context.verification.accountIdentity.avatar, /podo\.jpg$/);
 
   const verifyProfileApi = apiCall(context, "UserByScreenName");
   assert.ok(verifyProfileApi, "verify should resolve configured handles");
@@ -386,7 +395,7 @@ async function run() {
   assert.strictEqual(item.author.name, "OpenAI");
   assert.strictEqual(item.author.username, "@openai");
   assert.strictEqual(item.author.uri, "https://x.com/openai");
-  assert.match(item.author.avatar, /_400x400\.jpg$/);
+  assert.match(item.author.avatar, /openai\.jpg$/);
   assert.deepStrictEqual(JSON.parse(item.actions.thread), {
     tweetId: "1950000000000000001",
     url: "https://x.com/openai/status/1950000000000000001"
@@ -400,7 +409,7 @@ async function run() {
   assert.match(item.annotations[0].text, /12 likes/);
   assert.match(item.annotations[0].text, /1,234 views/);
 
-  const initialState = JSON.parse(context._state.get("syncStateV3"));
+  const initialState = JSON.parse(context._state.get("syncStateV4"));
   assert.strictEqual(initialState.highWaterBySource["handle:openai"], "1950000000000000001");
   assert.strictEqual(initialState.highWaterBySource["handle:sama"], "1950000000000000001");
 
@@ -413,7 +422,7 @@ async function run() {
   assert.ifError(context.error);
   assert.strictEqual(context.results.length, 1);
   assert.strictEqual(context.results[0].uri, "https://x.com/openai/status/1950000000000000003");
-  const nextState = JSON.parse(context._state.get("syncStateV3"));
+  const nextState = JSON.parse(context._state.get("syncStateV4"));
   assert.strictEqual(nextState.highWaterBySource["handle:openai"], "1950000000000000003");
   assert.strictEqual(nextState.highWaterBySource["handle:sama"], "1950000000000000003");
 
@@ -569,6 +578,62 @@ async function run() {
   assert.strictEqual(urlOnlyCard.results[0].attachments[0].url, "https://example.com/only");
   assert.ok(!urlOnlyCard.results[0].body);
 
+  const unfurled = makeContext({
+    x_sources: "openai",
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000021",
+        fullText: "Read https://t.co/preview",
+        legacy: {
+          entities: {
+            urls: [
+              urlEntity("https://t.co/preview", "https://example.com/preview", "example.com/preview")
+            ]
+          },
+          extended_entities: { media: [] }
+        }
+      })
+    ]),
+    linkPreviews: {
+      "https://example.com/preview": `
+        <html>
+          <head>
+            <title>Fallback title</title>
+            <meta name="twitter:card" content="summary_large_image">
+            <meta property="og:title" content="Preview title">
+            <meta name="twitter:description" content="Preview summary">
+            <meta property="og:site_name" content="Example Site">
+            <meta name="twitter:creator" content="@writer">
+            <meta property="og:image" content="/preview.jpg">
+            <meta property="og:image:width" content="1200">
+            <meta property="og:image:height" content="630">
+          </head>
+        </html>
+      `
+    }
+  });
+  vm.runInContext("load()", unfurled);
+  await settle();
+  assert.ifError(unfurled.error);
+  const previewAttachment = unfurled.results[0].attachments[0];
+  assert.strictEqual(previewAttachment.kind, "link");
+  assert.strictEqual(previewAttachment.url, "https://example.com/preview");
+  assert.strictEqual(previewAttachment.type, "website");
+  assert.strictEqual(previewAttachment.title, "Preview title");
+  assert.strictEqual(previewAttachment.subtitle, "Preview summary");
+  assert.strictEqual(previewAttachment.siteName, "Example Site");
+  assert.strictEqual(previewAttachment.authorName, "writer");
+  assert.strictEqual(previewAttachment.image, "https://example.com/preview.jpg");
+  assert.strictEqual(previewAttachment.aspectSize.width, 1200);
+  assert.strictEqual(previewAttachment.aspectSize.height, 630);
+  assert.strictEqual(unfurled.results[0].body, "<p>Read</p>");
+  const previewCall = unfurled._calls.find(call => call.url === "https://example.com/preview");
+  assert.ok(previewCall, "missing link preview should fetch the expanded URL");
+  assert.ok(!previewCall.headers.Cookie, "external link preview requests must not include X cookies");
+  assert.match(previewCall.headers.Accept, /text\/html/);
+  const previewCache = JSON.parse(unfurled._state.get("linkPreviewCacheV1"));
+  assert.strictEqual(previewCache["https://example.com/preview"].preview.title, "Preview title");
+
   const video = makeContext({
     timeline: timelineBody([
       tweetResult({
@@ -607,14 +672,28 @@ async function run() {
     timeline: timelineBody([
       tweetResult({
         id: "1950000000000000007",
-        profile_image_url: "https://pbs.twimg.com/profile_images/1/avatar?format=jpg&name=normal"
+        profile_image_url: "https://pbs.twimg.com/profile_images/1/avatar.jpg?format=jpg&name=normal"
       })
     ])
   });
   vm.runInContext("load()", queryAvatar);
   await settle();
   assert.ifError(queryAvatar.error);
-  assert.strictEqual(queryAvatar.results[0].author.avatar, "https://pbs.twimg.com/profile_images/1/avatar?format=jpg&name=400x400");
+  assert.strictEqual(queryAvatar.results[0].author.avatar, "https://pbs.twimg.com/profile_images/1/avatar.jpg");
+
+  const modernAvatar = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000020",
+        profile_image_url: "",
+        avatar: { image_url: "https://pbs.twimg.com/profile_images/2/modern.jpg" }
+      })
+    ])
+  });
+  vm.runInContext("load()", modernAvatar);
+  await settle();
+  assert.ifError(modernAvatar.error);
+  assert.strictEqual(modernAvatar.results[0].author.avatar, "https://pbs.twimg.com/profile_images/2/modern.jpg");
 
   const quoted = makeContext({
     timeline: timelineBody([

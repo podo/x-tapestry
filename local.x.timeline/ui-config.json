@@ -75,6 +75,12 @@
       "value": "on"
     },
     {
+      "name": "fetch_link_previews",
+      "type": "switch",
+      "prompt": "Fetch Missing Link Previews",
+      "value": "on"
+    },
+    {
       "name": "batch_size",
       "type": "choices",
       "prompt": "Initial Item Limit",

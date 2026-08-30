@@ -35,10 +35,12 @@ or include them in screenshots.
 - Latest or Top search mode
 - Optional reply and repost filtering
 - Native post-style Tapestry items with author identity and avatar
+- Profile photos prefer X's current avatar field and stable profile-image URLs
 - Optional media attachments from post images, videos, GIFs, and note posts
 - Video/GIF attachments include explicit media type and thumbnail metadata
 - X-style URL preview cards that hide the trailing preview URL from post text
 - Link cards use X-provided title, description, site, author, image, and aspect metadata when available
+- Optional cached webpage metadata fetches fill in missing link-card title, description, site, author, and image data
 - Quoted posts are attached as Tapestry quoted-item previews
 - Poll cards are attached when X includes poll metadata in the response
 - Thread context action for opening a conversation inside Tapestry
@@ -46,7 +48,7 @@ or include them in screenshots.
 - Linked URLs, handles, hashtags, and cashtags in post text
 - Content warnings for sensitive posts when X marks them
 - Incremental refresh by newest post ID per source, with paginated catch-up
-- Connector sync state was bumped in v1.2.0 so existing feeds reload recent items with updated card/avatar rendering
+- Connector sync state was bumped in v1.2.1 so existing feeds reload recent items with updated card/avatar rendering
 - Configurable advanced query IDs for when X rotates web GraphQL IDs
 
 ## Reliability Notes
@@ -64,6 +66,11 @@ IDs from X's current web scripts after likely rotation errors.
 If loading starts failing with an automation or daily-limit-style error, leave
 **Use X Transaction Header** enabled and try again later. That error usually
 means X rejected the request fingerprint, not that a paid API quota is needed.
+
+When **Fetch Missing Link Previews** is enabled, the connector requests linked
+webpages directly to read standard Twitter Card and Open Graph metadata. X
+cookies are not sent to those sites, and successful preview metadata is cached
+for a week.
 
 ## Development and Tests
 
