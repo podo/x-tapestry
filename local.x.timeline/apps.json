@@ -1,0 +1,10 @@
+{
+  "apps": [
+    {
+      "id": "com.atebits.Tweetie2",
+      "name": "X",
+      "template": "__URL__",
+      "pattern": "https://(?:www\\.)?(?:x|twitter)\\.com"
+    }
+  ]
+}

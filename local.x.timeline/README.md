@@ -6,14 +6,19 @@ or third-party tweet-pulling service.
 
 ## Setup
 
-1. Open `x.com` in a browser where you are logged in.
-2. Open the browser developer tools and inspect a request to `x.com`.
-3. Copy either the full `Cookie` request header, or copy the individual
-   `auth_token` and `ct0` cookie values.
-4. Create a Tapestry feed with this connector.
-5. Paste the full cookie header into **Cookie Header**, or paste the individual
+1. Run `node scripts/x-cookie-helper.mjs` from the repository root, log in to
+   X in the temporary browser window, then press Enter in the terminal. The
+   helper copies a minimal `auth_token=...; ct0=...` cookie header to the
+   clipboard without printing the secret values.
+2. If you prefer to do it manually, open `x.com` in a browser where you are
+   logged in, inspect a request to `x.com`, and copy either the full `Cookie`
+   request header or the individual `auth_token` and `ct0` cookie values.
+3. Create a Tapestry feed with this connector. You can also use Feed Finder
+   with an `@handle`, `x.com` profile URL, `twitter.com` profile URL, or status
+   URL to prefill the handle.
+4. Paste the full cookie header into **Cookie Header**, or paste the individual
    values into **auth_token Cookie** and **ct0 Cookie**.
-6. Set **Source Mode** to **Handles** and enter comma-separated handles such as
+5. Set **Source Mode** to **Handles** and enter comma-separated handles such as
    `openai, sama`, or set it to **Search Query** and enter a full X search.
 
 The cookies are entered during feed setup and are not included in the connector
@@ -23,8 +28,10 @@ or include them in screenshots.
 ## Features
 
 - Zero per-tweet cost through an authenticated `x.com` web session
-- Comma-separated handle feeds using X search `from:` queries
+- Comma-separated handle feeds using X profile timelines
 - Raw X search query feeds for advanced filters
+- Feed Finder support for `@handle`, `x.com`, and `twitter.com` inputs
+- Setup suggestions for common handle/search examples
 - Latest or Top search mode
 - Optional reply and repost filtering
 - Native post-style Tapestry items with author identity and avatar
@@ -33,9 +40,12 @@ or include them in screenshots.
 - Optional link cards for external links when no richer attachment is present
 - Quoted posts are attached as Tapestry quoted-item previews
 - Poll cards are attached when X includes poll metadata in the response
-- Metrics annotations for replies, reposts, quotes, likes, and views
-- Incremental refresh by newest post ID, with paginated catch-up
-- Configurable SearchTimeline query ID for when X rotates web GraphQL IDs
+- Thread context action for opening a conversation inside Tapestry
+- Annotations for replies, reposts, quotes, likes, views, and repost source
+- Linked URLs, handles, hashtags, and cashtags in post text
+- Content warnings for sensitive posts when X marks them
+- Incremental refresh by newest post ID per source, with paginated catch-up
+- Configurable advanced query IDs for when X rotates web GraphQL IDs
 
 ## Reliability Notes
 
@@ -45,8 +55,9 @@ query IDs, change response shapes, rate-limit the account, or block automated
 traffic.
 
 If loading starts failing with a query-ID or GraphQL validation error, capture
-the current `SearchTimeline` query ID from a fresh X web request and update the
-feed's **SearchTimeline Query ID** setting.
+the current query ID from a fresh X web request and update the matching
+**Advanced** query-ID field. The connector also tries to discover updated query
+IDs from X's current web scripts after likely rotation errors.
 
 If loading starts failing with an automation or daily-limit-style error, leave
 **Use X Transaction Header** enabled and try again later. That error usually

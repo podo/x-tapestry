@@ -1,0 +1,36 @@
+{
+  "variables": [
+    {
+      "name": "x_sources",
+      "value": "openai",
+      "title": "OpenAI"
+    },
+    {
+      "name": "x_sources",
+      "value": "sama",
+      "title": "Sam Altman"
+    },
+    {
+      "title": "OpenAI + Sam",
+      "names": [
+        "source_mode",
+        "x_sources"
+      ],
+      "values": [
+        "Handles",
+        "openai, sama"
+      ]
+    },
+    {
+      "title": "X Search",
+      "names": [
+        "source_mode",
+        "x_sources"
+      ],
+      "values": [
+        "Search Query",
+        "Tapestry app lang:en"
+      ]
+    }
+  ]
+}

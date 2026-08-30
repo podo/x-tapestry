@@ -5,12 +5,19 @@ const apiBase = "https://x.com/i/api/graphql";
 const xHomeUrl = "https://x.com/";
 const xIconUrl = "https://x.com/favicon.ico";
 const defaultSearchTimelineQueryId = "Bcw3RzK-PatNAmbnw54hFw";
+const defaultUserByScreenNameQueryId = "2qvSHpkWTMS9i0zJAwDNiA";
+const defaultUserTweetsQueryId = "hr4gzZONlq23okjU8fIe_A";
+const defaultTweetDetailQueryId = "97JF30KziU00483E_8elBA";
 const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
-const syncStateKey = "syncStateV1";
+const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
+const syncStateKey = "syncStateV2";
 const transactionCacheKey = "transactionCacheV1";
+const queryIdCacheKey = "queryIdCacheV1";
 const transactionCacheTtlMilliseconds = 15 * 60 * 1000;
+const queryIdCacheTtlMilliseconds = 24 * 60 * 60 * 1000;
 const maximumIncrementalPages = 5;
+const maximumQueryIdScripts = 40;
 const transactionKeyword = "obfiowerehiring";
 const transactionEpochOffsetMilliseconds = 1682924400 * 1000;
 
@@ -47,6 +54,24 @@ const readFeatures = {
   responsive_web_enhance_cards_enabled: false
 };
 
+const userByScreenNameFeatures = {
+  hidden_profile_subscriptions_enabled: true,
+  profile_label_improvements_pcf_label_in_post_enabled: true,
+  responsive_web_graphql_exclude_directive_enabled: true,
+  verified_phone_label_enabled: false,
+  subscriptions_verification_info_is_identity_verified_enabled: true,
+  subscriptions_verification_info_verified_since_enabled: true,
+  highlights_tweets_tab_ui_enabled: true,
+  responsive_web_twitter_article_notes_tab_enabled: true,
+  creator_subscriptions_tweet_preview_api_enabled: true,
+  responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
+  responsive_web_graphql_timeline_navigation_enabled: true
+};
+
+const userTimelineFieldToggles = {
+  withArticlePlainText: false
+};
+
 function verify() {
   verifyAsync().then(processVerification).catch(processError);
 }
@@ -55,18 +80,60 @@ function load() {
   loadAsync().then(processResults).catch(processError);
 }
 
+function performAction(actionId, actionValue, item) {
+  performActionAsync(actionId, actionValue, item)
+    .then(result => actionComplete(result, null))
+    .catch(error => actionComplete(null, error));
+}
+
+async function performActionAsync(actionId, actionValue, item) {
+  if (actionId !== "thread") {
+    throw new Error(`Unsupported X action: ${actionId}`);
+  }
+
+  const value = parseActionValue(actionValue);
+  const tweetId = value.tweetId || tweetIdFromUrl(value.url) || tweetIdFromUrl(item && item.uri);
+  if (!tweetId) throw new Error("Could not determine the X post ID for this thread.");
+
+  const credentials = normalizedCredentials();
+  return tweetDetailItems(tweetId, credentials);
+}
+
 async function verifyAsync() {
   const credentials = normalizedCredentials();
-  const query = buildSearchQuery();
-  const page = await searchTimelinePage(query, 1, null, credentials);
   const result = {
     displayName: `X - ${sourceLabel()}`,
     icon: xIconUrl
   };
 
-  const firstAvatar = page.items.length > 0 ? page.items[0].authorAvatar : null;
-  if (firstAvatar && normalizedSourceMode() === "handles" && normalizedHandles().length === 1) {
-    result.icon = firstAvatar;
+  if (normalizedSourceMode() === "handles") {
+    const handles = normalizedHandles();
+    if (handles.length === 0) throw new Error("Enter one or more valid X handles.");
+
+    const profiles = [];
+    for (const handle of handles) {
+      profiles.push(await userProfileByHandle(handle, credentials));
+    }
+
+    if (profiles.length > 0) {
+      await userTweetsPage(profiles[0].id, 1, null, credentials);
+    }
+
+    if (profiles.length === 1) {
+      result.displayName = `X - @${profiles[0].username || handles[0]}`;
+      if (profiles[0].avatar) result.icon = profiles[0].avatar;
+    }
+  }
+  else {
+    const query = buildSearchQuery();
+    const page = await searchTimelinePage(query, 1, null, credentials);
+    const firstAvatar = page.items.length > 0 ? page.items[0].authorAvatar : null;
+    if (firstAvatar) result.icon = firstAvatar;
+  }
+
+  const accountIdentity = await currentAccountIdentity(credentials);
+  if (accountIdentity) {
+    result.accountIdentity = accountIdentity;
   }
 
   return result;
@@ -74,12 +141,18 @@ async function verifyAsync() {
 
 async function loadAsync() {
   const credentials = normalizedCredentials();
+  if (normalizedSourceMode() === "handles") {
+    return loadHandleTimelines(credentials);
+  }
+  return loadSearchTimeline(credentials);
+}
+
+async function loadSearchTimeline(credentials) {
   const query = buildSearchQuery();
   const signature = currentSyncSignature(query);
-  let syncState = readSyncState();
-  if (syncState.signature !== signature) {
-    syncState = newSyncState(signature);
-  }
+  const syncState = syncStateForSignature(signature);
+  const syncKey = "search";
+  const highWaterId = syncHighWater(syncState, syncKey);
 
   const limit = normalizedBatchSize();
   const tweets = [];
@@ -95,7 +168,7 @@ async function loadAsync() {
       fetchedIds.push(tweet.id);
       if (!shouldIncludeTweet(tweet)) continue;
 
-      if (syncState.highWaterId && compareIds(tweet.id, syncState.highWaterId) <= 0) {
+      if (highWaterId && compareIds(tweet.id, highWaterId) <= 0) {
         reachedKnownItem = true;
         continue;
       }
@@ -105,23 +178,62 @@ async function loadAsync() {
 
     cursor = page.nextCursor;
     pageCount += 1;
-  } while (syncState.highWaterId && cursor && !reachedKnownItem && pageCount < maximumIncrementalPages);
+  } while (highWaterId && cursor && !reachedKnownItem && pageCount < maximumIncrementalPages);
 
   const newestId = maxId(fetchedIds);
-  if (newestId && (!syncState.highWaterId || compareIds(newestId, syncState.highWaterId) > 0)) {
-    writeSyncState({
-      signature,
-      highWaterId: newestId
-    });
-  }
-  else if (syncState.signature !== signature) {
-    writeSyncState({
-      signature,
-      highWaterId: syncState.highWaterId || null
-    });
+  if (newestId && (!highWaterId || compareIds(newestId, highWaterId) > 0)) {
+    setSyncHighWater(syncState, syncKey, newestId);
   }
 
-  return dedupeTweets(tweets).map(tweetToItem);
+  writeSyncState(syncState);
+  return sortTweetsNewestFirst(dedupeTweets(tweets)).map(tweetToItem);
+}
+
+async function loadHandleTimelines(credentials) {
+  const handles = normalizedHandles();
+  if (handles.length === 0) throw new Error("Enter one or more valid X handles.");
+
+  const signature = currentSyncSignature(handles.join(","));
+  const syncState = syncStateForSignature(signature);
+  const limit = normalizedBatchSize();
+  const tweets = [];
+
+  for (const handle of handles) {
+    const profile = await userProfileByHandle(handle, credentials);
+    const syncKey = `handle:${profile.username || handle}`;
+    const highWaterId = syncHighWater(syncState, syncKey);
+    const fetchedIds = [];
+    let cursor = null;
+    let pageCount = 0;
+    let reachedKnownItem = false;
+
+    do {
+      const page = await userTweetsPage(profile.id, limit, cursor, credentials);
+      for (const tweet of page.items) {
+        if (!tweet || !tweet.id) continue;
+        fetchedIds.push(tweet.id);
+        if (!shouldIncludeTweet(tweet)) continue;
+
+        if (highWaterId && compareIds(tweet.id, highWaterId) <= 0) {
+          reachedKnownItem = true;
+          continue;
+        }
+
+        tweets.push(tweet);
+      }
+
+      cursor = page.nextCursor;
+      pageCount += 1;
+    } while (highWaterId && cursor && !reachedKnownItem && pageCount < maximumIncrementalPages);
+
+    const newestId = maxId(fetchedIds);
+    if (newestId && (!highWaterId || compareIds(newestId, highWaterId) > 0)) {
+      setSyncHighWater(syncState, syncKey, newestId);
+    }
+  }
+
+  writeSyncState(syncState);
+  return sortTweetsNewestFirst(dedupeTweets(tweets)).map(tweetToItem);
 }
 
 async function searchTimelinePage(query, count, cursor, credentials) {
@@ -149,22 +261,141 @@ async function searchTimelinePage(query, count, cursor, credentials) {
   };
 }
 
+async function userProfileByHandle(handle, credentials) {
+  const data = await graphqlGet(
+    "UserByScreenName",
+    normalizedUserByScreenNameQueryId(),
+    {
+      screen_name: handle,
+      withSafetyModeUserFields: true
+    },
+    userByScreenNameFeatures,
+    null,
+    credentials
+  );
+  return userProfileFromGraphql(data, handle);
+}
+
+async function userTweetsPage(userId, count, cursor, credentials) {
+  const variables = {
+    userId: String(userId),
+    count,
+    includePromotedContent: false,
+    withQuickPromoteEligibilityTweetFields: true,
+    withVoice: true
+  };
+  if (cursor) variables.cursor = cursor;
+
+  const data = await graphqlGet(
+    "UserTweets",
+    normalizedUserTweetsQueryId(),
+    variables,
+    readFeatures,
+    userTimelineFieldToggles,
+    credentials
+  );
+
+  const instructions = userTimelineInstructions(data);
+  return {
+    items: extractTweetsFromInstructions(instructions),
+    nextCursor: bottomCursor(instructions)
+  };
+}
+
+async function currentAccountIdentity(credentials) {
+  try {
+    const text = await requestText(accountSettingsUrl, "GET", null, restHeaders(credentials), "AccountSettings");
+    const settings = JSON.parse(text);
+    const handle = sanitizeHandle(settings.screen_name || settings.screenName || settings.username);
+    if (!handle) return null;
+
+    let profile = null;
+    try {
+      profile = await userProfileByHandle(handle, credentials);
+    }
+    catch (error) {
+      profile = null;
+    }
+
+    const name = profile && profile.name ? profile.name : (settings.name || handle);
+    const avatar = profile && profile.avatar
+      ? profile.avatar
+      : normalizedAvatar(settings.profile_image_url_https || settings.profile_image_url);
+    return createIdentity(name, `@${handle}`, avatar, `https://x.com/${handle}`);
+  }
+  catch (error) {
+    console.log(`Unable to load X account identity: ${error.message || error}`);
+    return null;
+  }
+}
+
+async function tweetDetailItems(tweetId, credentials) {
+  const data = await graphqlGet(
+    "TweetDetail",
+    normalizedTweetDetailQueryId(),
+    {
+      focalTweetId: String(tweetId),
+      referrer: "tweet",
+      with_rux_injections: false,
+      includePromotedContent: false,
+      withCommunity: true,
+      withQuickPromoteEligibilityTweetFields: true,
+      withBirdwatchNotes: true,
+      withVoice: true,
+      rankingMode: "Relevance"
+    },
+    readFeatures,
+    userTimelineFieldToggles,
+    credentials
+  );
+
+  const tweets = dedupeTweets(extractTweetsFromInstructions(tweetDetailInstructions(data)));
+  const items = tweets.map(tweetToItem);
+  if (items.length > 0) return items;
+  throw new Error("X did not return a conversation for this post.");
+}
+
+function userProfileFromGraphql(data, requestedHandle) {
+  const rawUser = data && data.data && data.data.user && data.data.user.result;
+  const profile = normalizeUserProfile(rawUser);
+  if (!profile.id) {
+    throw new Error(`Could not resolve @${requestedHandle}. Check the handle or refresh the UserByScreenName query ID.`);
+  }
+  return profile;
+}
+
+function restHeaders(credentials) {
+  return {
+    "Authorization": `Bearer ${normalizedBearerToken()}`,
+    "x-csrf-token": credentials.ct0,
+    "x-twitter-active-user": "yes",
+    "x-twitter-auth-type": "OAuth2Session",
+    "x-twitter-client-language": "en",
+    "User-Agent": browserUserAgent,
+    "Accept": "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://x.com/settings/account",
+    "Cookie": credentials.cookie
+  };
+}
+
 async function graphqlGet(action, queryId, variables, features, fieldToggles, credentials) {
-  const path = `/i/api/graphql/${queryId}/${action}`;
   const parameters = [
     ["variables", JSON.stringify(variables)]
   ];
   if (features) parameters.push(["features", JSON.stringify(features)]);
   if (fieldToggles) parameters.push(["fieldToggles", JSON.stringify(fieldToggles)]);
 
-  const url = `${apiBase}/${queryId}/${action}?${encodeQuery(parameters)}`;
   let lastError = null;
+  let activeQueryId = queryId;
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const path = `/i/api/graphql/${activeQueryId}/${action}`;
+    const url = `${apiBase}/${activeQueryId}/${action}?${encodeQuery(parameters)}`;
     const headers = await graphQlHeaders("GET", path, credentials);
     let text;
     try {
-      text = await requestText(url, "GET", null, headers);
+      text = await requestText(url, "GET", null, headers, action);
       return parseGraphqlResponse(text, action);
     }
     catch (error) {
@@ -172,6 +403,13 @@ async function graphqlGet(action, queryId, variables, features, fieldToggles, cr
       if (attempt === 0 && isTransactionRetryableError(error)) {
         clearTransactionCache();
         continue;
+      }
+      if (attempt < 2 && isQueryIdRetryableError(error)) {
+        const discovered = await discoverQueryId(action, credentials, activeQueryId);
+        if (discovered && discovered !== activeQueryId) {
+          activeQueryId = discovered;
+          continue;
+        }
       }
       throw error;
     }
@@ -208,7 +446,7 @@ async function graphQlHeaders(method, path, credentials) {
   return headers;
 }
 
-async function requestText(url, method, body, headers) {
+async function requestText(url, method, body, headers, action) {
   let text;
   try {
     text = await sendRequest(url, method, body, headers, true);
@@ -219,7 +457,7 @@ async function requestText(url, method, body, headers) {
 
   const wrapped = statusWrappedResponse(text);
   if (wrapped) {
-    if (wrapped.status >= 400) throw statusError(wrapped.status, wrapped.body, wrapped.headers);
+    if (wrapped.status >= 400) throw statusError(wrapped.status, wrapped.body, wrapped.headers, action);
     return typeof wrapped.body === "string" ? wrapped.body : JSON.stringify(wrapped.body);
   }
 
@@ -240,10 +478,10 @@ function statusWrappedResponse(text) {
   return null;
 }
 
-function statusError(status, body, headers) {
+function statusError(status, body, headers, action) {
   let message = `X returned HTTP ${status}.`;
   if (status === 400) {
-    message = "X rejected the SearchTimeline request. The query ID may have rotated; update SearchTimeline Query ID.";
+    message = `X rejected the ${action || "GraphQL"} request. The query ID may have rotated; update the advanced ${action || "GraphQL"} query ID.`;
   }
   else if (status === 401 || status === 403) {
     message = "X rejected the session cookies. Refresh auth_token and ct0 from a logged-in x.com session.";
@@ -287,7 +525,7 @@ function parseGraphqlResponse(text, action) {
       message = "X rate limit reached. Try again later.";
     }
     else if (/must be defined|validation|query/i.test(message)) {
-      message = `${message} The SearchTimeline query ID may have rotated.`;
+      message = `${message} The ${action} query ID may have rotated.`;
     }
 
     const error = new Error(message);
@@ -305,6 +543,12 @@ function parseGraphqlResponse(text, action) {
 
 function isTransactionRetryableError(error) {
   return error && error.xGraphqlCode === 344;
+}
+
+function isQueryIdRetryableError(error) {
+  const message = error && error.message ? error.message : "";
+  return Boolean(error && error.xStatus === 400)
+    || /query ID|query id|must be defined|validation|PersistedQuery|operation/i.test(message);
 }
 
 function firstGraphqlErrorMessage(body) {
@@ -334,6 +578,25 @@ function searchTimelineInstructions(data) {
     && data.data.search_by_raw_query
     && data.data.search_by_raw_query.search_timeline
     && data.data.search_by_raw_query.search_timeline.timeline;
+  return root && Array.isArray(root.instructions) ? root.instructions : [];
+}
+
+function userTimelineInstructions(data) {
+  const user = data && data.data && data.data.user && data.data.user.result;
+  const root = user
+    && (
+      (user.timeline_v2 && user.timeline_v2.timeline)
+      || (user.timeline && user.timeline.timeline)
+      || user.timeline
+    );
+  if (root && Array.isArray(root.instructions)) return root.instructions;
+  return searchTimelineInstructions(data);
+}
+
+function tweetDetailInstructions(data) {
+  const root = data
+    && data.data
+    && data.data.threaded_conversation_with_injections_v2;
   return root && Array.isArray(root.instructions) ? root.instructions : [];
 }
 
@@ -377,6 +640,19 @@ function normalizeTweet(rawResult, includeQuoted) {
 
   const user = normalizeUser(result.core && result.core.user_results && result.core.user_results.result);
   const date = tweetDate(legacy.created_at);
+
+  const retweetedRaw = legacy.retweeted_status_result && legacy.retweeted_status_result.result;
+  if (retweetedRaw) {
+    const retweeted = normalizeTweet(retweetedRaw, includeQuoted);
+    if (!retweeted) return null;
+    retweeted.date = date;
+    retweeted.isRetweet = true;
+    retweeted.repostedByName = user.name || user.username || "X";
+    retweeted.repostedByUsername = user.username || null;
+    retweeted.repostedByAvatar = user.avatar || null;
+    return retweeted;
+  }
+
   const media = extractMedia(result, legacy);
   const externalUrls = dedupeStrings(extractExternalUrls(result, legacy));
   const card = extractCard(result, externalUrls);
@@ -406,7 +682,12 @@ function normalizeTweet(rawResult, includeQuoted) {
     card,
     poll,
     isReply: Boolean(legacy.in_reply_to_status_id_str || legacy.in_reply_to_user_id_str),
-    isRetweet: Boolean(legacy.retweeted_status_result || /^RT @/.test(legacy.full_text || "")),
+    replyToUsername: legacy.in_reply_to_screen_name || null,
+    isRetweet: /^RT @/.test(legacy.full_text || ""),
+    repostedByName: null,
+    repostedByUsername: null,
+    repostedByAvatar: null,
+    contentWarning: legacy.possibly_sensitive ? "Sensitive content" : null,
     quoted
   };
 }
@@ -419,6 +700,15 @@ function unwrapTweetResult(result) {
 }
 
 function normalizeUser(rawUser) {
+  const profile = normalizeUserProfile(rawUser);
+  return {
+    username: profile.username,
+    name: profile.name,
+    avatar: profile.avatar
+  };
+}
+
+function normalizeUserProfile(rawUser) {
   const user = rawUser && rawUser.result ? rawUser.result : rawUser;
   const core = user && user.core ? user.core : {};
   const legacy = user && user.legacy ? user.legacy : {};
@@ -434,7 +724,19 @@ function normalizeUser(rawUser) {
     || (user && user.avatar && user.avatar.imageUrl)
     || (user && user.avatar && user.avatar.url)
   );
-  return { username, name, avatar };
+  const id = (user && user.rest_id)
+    || (user && user.id_str)
+    || core.id_str
+    || legacy.id_str
+    || null;
+  return {
+    id: id ? String(id) : null,
+    username,
+    name,
+    avatar,
+    url: username ? `https://x.com/${username}` : null,
+    protected: Boolean(legacy.protected)
+  };
 }
 
 function expandedTweetText(fullText, legacyEntities, note) {
@@ -737,6 +1039,7 @@ function bottomCursor(instructions) {
 function tweetToItem(tweet) {
   const item = Item.createWithUriDate(tweet.url, tweet.date || new Date());
   item.body = tweetBody(tweet);
+  if (tweet.contentWarning) item.contentWarning = tweet.contentWarning;
 
   item.author = tweetIdentity(tweet);
 
@@ -746,6 +1049,8 @@ function tweetToItem(tweet) {
   const attachments = tweetAttachments(tweet);
   if (attachments.length > 0) item.attachments = attachments;
 
+  item.actions = tweetActions(tweet);
+
   return item;
 }
 
@@ -754,26 +1059,46 @@ function tweetBody(tweet) {
 }
 
 function tweetIdentity(tweet) {
-  const identity = Identity.createWithName(tweet.authorName || "X");
-  identity.uri = tweet.authorUsername ? `https://x.com/${tweet.authorUsername}` : "https://x.com";
-  if (tweet.authorUsername) identity.username = `@${tweet.authorUsername}`;
-  if (tweet.authorAvatar) identity.avatar = tweet.authorAvatar;
+  const username = tweet.authorUsername ? `@${tweet.authorUsername}` : null;
+  const uri = tweet.authorUsername ? `https://x.com/${tweet.authorUsername}` : "https://x.com";
+  return createIdentity(tweet.authorName || "X", username, tweet.authorAvatar, uri);
+}
+
+function createIdentity(name, username, avatar, uri) {
+  if (typeof Identity.create === "function") {
+    return Identity.create(name, username, avatar, uri);
+  }
+  const identity = Identity.createWithName(name);
+  if (username) identity.username = username;
+  if (avatar) identity.avatar = avatar;
+  if (uri) identity.uri = uri;
   return identity;
 }
 
 function tweetAnnotations(tweet) {
   const annotations = [];
-  const details = [];
-  if (tweet.isReply) details.push("Reply");
-  if (tweet.isRetweet) details.push("Repost");
+  if (tweet.repostedByUsername || tweet.repostedByName) {
+    const text = tweet.repostedByUsername
+      ? `@${tweet.repostedByUsername} Reposted`
+      : `${tweet.repostedByName} Reposted`;
+    const annotation = Annotation.createWithText(text);
+    if (tweet.repostedByAvatar) annotation.icon = tweet.repostedByAvatar;
+    if (tweet.repostedByUsername) annotation.uri = `https://x.com/${tweet.repostedByUsername}`;
+    annotations.push(annotation);
+  }
+  if (tweet.isReply) {
+    const text = tweet.replyToUsername ? `Reply to @${tweet.replyToUsername}` : "Reply";
+    annotations.push(Annotation.createWithText(text));
+  }
   if (showMetrics()) {
+    const details = [];
     if (tweet.replies > 0) details.push(`${formatCount(tweet.replies)} replies`);
     if (tweet.reposts > 0) details.push(`${formatCount(tweet.reposts)} reposts`);
     if (tweet.quotes > 0) details.push(`${formatCount(tweet.quotes)} quotes`);
     if (tweet.likes > 0) details.push(`${formatCount(tweet.likes)} likes`);
     if (tweet.views > 0) details.push(`${formatCount(tweet.views)} views`);
+    if (details.length > 0) annotations.push(Annotation.createWithText(details.join(" - ")));
   }
-  if (details.length > 0) annotations.push(Annotation.createWithText(details.join(" - ")));
   return annotations;
 }
 
@@ -859,6 +1184,7 @@ function quotedTweetAttachment(tweet) {
 
   const quote = Item.createWithUriDate(tweet.quoted.url, tweet.quoted.date || new Date());
   quote.body = tweetBody(tweet.quoted);
+  if (tweet.quoted.contentWarning) quote.contentWarning = tweet.quoted.contentWarning;
   quote.author = tweetIdentity(tweet.quoted);
 
   const attachments = tweetMediaAttachments(tweet.quoted);
@@ -867,8 +1193,37 @@ function quotedTweetAttachment(tweet) {
     if (link) attachments.push(link);
   }
   if (attachments.length > 0) quote.attachments = attachments;
+  quote.actions = tweetActions(tweet.quoted);
 
   return quote;
+}
+
+function tweetActions(tweet) {
+  if (!tweet || !tweet.id) return {};
+  return {
+    thread: JSON.stringify({
+      tweetId: tweet.id,
+      url: tweet.url
+    })
+  };
+}
+
+function parseActionValue(value) {
+  if (!value) return {};
+  if (typeof value === "object") return value;
+  try {
+    const parsed = JSON.parse(String(value));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  }
+  catch (error) {
+    return {};
+  }
+}
+
+function tweetIdFromUrl(value) {
+  if (typeof value !== "string") return null;
+  const match = value.match(/\/status\/(\d+)/);
+  return match ? match[1] : null;
 }
 
 function shouldIncludeTweet(tweet) {
@@ -882,13 +1237,17 @@ function currentSyncSignature(query) {
     mode: normalizedSourceMode(),
     query,
     product: normalizedSearchProduct(),
+    searchFilters: normalizedSourceMode() === "search query" ? stringInput("query_suffix").trim() : "",
     includeReplies: includeReplies(),
     includeRetweets: includeRetweets(),
     showMetrics: showMetrics(),
     showMedia: showMedia(),
     showLinkCards: showLinkCards(),
     batchSize: normalizedBatchSize(),
-    queryId: normalizedSearchQueryId(),
+    searchQueryId: normalizedSearchQueryId(),
+    userByScreenNameQueryId: normalizedUserByScreenNameQueryId(),
+    userTweetsQueryId: normalizedUserTweetsQueryId(),
+    tweetDetailQueryId: normalizedTweetDetailQueryId(),
     transactionHeader: useTransactionHeader()
   });
 }
@@ -896,8 +1255,13 @@ function currentSyncSignature(query) {
 function newSyncState(signature) {
   return {
     signature,
-    highWaterId: null
+    highWaterBySource: {}
   };
+}
+
+function syncStateForSignature(signature) {
+  const syncState = readSyncState();
+  return syncState.signature === signature ? syncState : newSyncState(signature);
 }
 
 function readSyncState() {
@@ -910,6 +1274,18 @@ function readSyncState() {
   catch (error) {
     return newSyncState(null);
   }
+}
+
+function syncHighWater(state, key) {
+  if (!state || !key) return null;
+  if (state.highWaterBySource && state.highWaterBySource[key]) return state.highWaterBySource[key];
+  if (key === "search" && state.highWaterId) return state.highWaterId;
+  return null;
+}
+
+function setSyncHighWater(state, key, highWaterId) {
+  if (!state.highWaterBySource) state.highWaterBySource = {};
+  state.highWaterBySource[key] = highWaterId;
 }
 
 function writeSyncState(state) {
@@ -1025,6 +1401,21 @@ function normalizedSearchQueryId() {
   return value || defaultSearchTimelineQueryId;
 }
 
+function normalizedUserByScreenNameQueryId() {
+  const value = stringInput("user_by_screen_name_query_id").trim();
+  return value || defaultUserByScreenNameQueryId;
+}
+
+function normalizedUserTweetsQueryId() {
+  const value = stringInput("user_tweets_query_id").trim();
+  return value || defaultUserTweetsQueryId;
+}
+
+function normalizedTweetDetailQueryId() {
+  const value = stringInput("tweet_detail_query_id").trim();
+  return value || defaultTweetDetailQueryId;
+}
+
 function normalizedBearerToken() {
   const value = stringInput("bearer_token").trim().replace(/^bearer\s+/i, "");
   return value || defaultBearerToken;
@@ -1136,6 +1527,86 @@ function writeTransactionCache(seed) {
 
 function clearTransactionCache() {
   safeSetItem(transactionCacheKey, "");
+}
+
+async function discoverQueryId(action, credentials, rejectedQueryId) {
+  const cached = readQueryIdCache(action);
+  if (cached && cached !== rejectedQueryId) return cached;
+
+  try {
+    const home = await requestText(xHomeUrl, "GET", null, homeHeaders(credentials));
+    const scripts = scriptUrlsFromHtml(home).slice(0, maximumQueryIdScripts);
+    for (const scriptUrl of scripts) {
+      const script = await requestText(scriptUrl, "GET", null, staticHeaders());
+      const queryId = queryIdFromScript(script, action);
+      if (queryId) {
+        writeQueryIdCache(action, queryId);
+        return queryId;
+      }
+    }
+  }
+  catch (error) {
+    console.log(`Unable to discover ${action} query ID: ${error.message || error}`);
+  }
+
+  return null;
+}
+
+function scriptUrlsFromHtml(home) {
+  const urls = [];
+  const regex = /(?:src|href)=["'](https:\/\/abs\.twimg\.com\/responsive-web\/client-web[^"']+?\.js)["']/g;
+  let match;
+  while ((match = regex.exec(home || "")) !== null) {
+    if (urls.indexOf(match[1]) < 0) urls.push(match[1]);
+  }
+  return urls;
+}
+
+function queryIdFromScript(script, action) {
+  const name = escapeRegExp(action);
+  const patterns = [
+    new RegExp(`queryId:\\s*["']([A-Za-z0-9_-]+)["'][\\s\\S]{0,900}operationName:\\s*["']${name}["']`),
+    new RegExp(`operationName:\\s*["']${name}["'][\\s\\S]{0,900}queryId:\\s*["']([A-Za-z0-9_-]+)["']`)
+  ];
+
+  for (const pattern of patterns) {
+    const match = pattern.exec(script || "");
+    if (match) return match[1];
+  }
+  return null;
+}
+
+function readQueryIdCache(action) {
+  const stored = safeGetItem(queryIdCacheKey);
+  if (!stored) return null;
+  try {
+    const parsed = JSON.parse(stored);
+    const entry = parsed && parsed[action];
+    if (!entry || typeof entry.queryId !== "string") return null;
+    if (!entry.builtAt || Date.now() - Number(entry.builtAt) >= queryIdCacheTtlMilliseconds) return null;
+    return entry.queryId;
+  }
+  catch (error) {
+    return null;
+  }
+}
+
+function writeQueryIdCache(action, queryId) {
+  let parsed = {};
+  const stored = safeGetItem(queryIdCacheKey);
+  if (stored) {
+    try {
+      parsed = JSON.parse(stored) || {};
+    }
+    catch (error) {
+      parsed = {};
+    }
+  }
+  parsed[action] = {
+    builtAt: Date.now(),
+    queryId
+  };
+  safeSetItem(queryIdCacheKey, JSON.stringify(parsed));
 }
 
 function safeGetItem(key) {
@@ -1362,6 +1833,14 @@ function dedupeTweets(tweets) {
   return dedupeBy(tweets, tweet => tweet && tweet.id);
 }
 
+function sortTweetsNewestFirst(tweets) {
+  return (tweets || []).slice().sort((left, right) => {
+    const leftTime = left && left.date ? left.date.getTime() : 0;
+    const rightTime = right && right.date ? right.date.getTime() : 0;
+    return rightTime - leftTime;
+  });
+}
+
 function dedupeBy(items, keyFunction) {
   const seen = {};
   const out = [];
@@ -1442,18 +1921,46 @@ function urlHost(value) {
 
 function linkifiedText(value) {
   const text = String(value || "");
-  const regex = /(https?:\/\/[^\s<]+)/g;
+  const regex = /(https?:\/\/[^\s<]+)|(^|[^\w/])@([A-Za-z0-9_]{1,15})\b|(^|[^\w/])#([A-Za-z0-9_]+)\b|(^|[^\w/])\$([A-Za-z][A-Za-z0-9_]{0,9})\b/g;
   let html = "";
   let lastIndex = 0;
   let match;
   while ((match = regex.exec(text)) !== null) {
     html += escapeHtml(text.slice(lastIndex, match.index));
-    const url = match[0];
-    html += `<a href="${escapeAttribute(url)}">${escapeHtml(displayUrl(url))}</a>`;
-    lastIndex = match.index + url.length;
+    if (match[1]) {
+      const parts = splitTrailingUrlPunctuation(match[1]);
+      html += linkedText(parts.url, displayUrl(parts.url));
+      html += escapeHtml(parts.trailing);
+    }
+    else if (match[3]) {
+      html += escapeHtml(match[2]);
+      html += linkedText(`https://x.com/${match[3]}`, `@${match[3]}`);
+    }
+    else if (match[5]) {
+      html += escapeHtml(match[4]);
+      html += linkedText(`https://x.com/hashtag/${encodeURIComponent(match[5])}`, `#${match[5]}`);
+    }
+    else if (match[7]) {
+      html += escapeHtml(match[6]);
+      html += linkedText(`https://x.com/search?q=${encodeURIComponent(`$${match[7]}`)}`, `$${match[7]}`);
+    }
+    lastIndex = match.index + match[0].length;
   }
   html += escapeHtml(text.slice(lastIndex));
   return html.replace(/\n/g, "<br>");
+}
+
+function linkedText(url, label) {
+  return `<a href="${escapeAttribute(url)}">${escapeHtml(label)}</a>`;
+}
+
+function splitTrailingUrlPunctuation(value) {
+  const match = String(value).match(/^(.+?)([),.!?:;]+)?$/);
+  if (!match) return { url: value, trailing: "" };
+  return {
+    url: match[1],
+    trailing: match[2] || ""
+  };
 }
 
 function displayUrl(value) {
@@ -1486,6 +1993,10 @@ function escapeHtml(value) {
 
 function escapeAttribute(value) {
   return escapeHtml(value);
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function encodeQuery(pairs) {

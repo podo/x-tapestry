@@ -3,7 +3,7 @@
     {
       "name": "cookie_header",
       "type": "text",
-      "prompt": "Cookie Header (optional)",
+      "prompt": "Cookie Header",
       "placeholder": "auth_token=...; ct0=..."
     },
     {
@@ -28,19 +28,19 @@
     {
       "name": "x_sources",
       "type": "text",
-      "prompt": "Handles or Search Query",
-      "placeholder": "openai, sama or from:openai AI"
+      "prompt": "Handles / Search Query",
+      "placeholder": "openai, sama"
     },
     {
       "name": "query_suffix",
       "type": "text",
-      "prompt": "Extra Search Filters (optional)",
-      "placeholder": "lang:en min_faves:10"
+      "prompt": "Search Filters",
+      "placeholder": "Search mode only: lang:en min_faves:10"
     },
     {
       "name": "search_product",
       "type": "choices",
-      "prompt": "Search Type",
+      "prompt": "Search Ranking",
       "choices": "Latest,Top",
       "value": "Latest"
     },
@@ -84,20 +84,41 @@
     {
       "name": "use_transaction_header",
       "type": "switch",
-      "prompt": "Use X Transaction Header",
+      "prompt": "Advanced: Transaction Header",
       "value": "on"
     },
     {
       "name": "search_query_id",
       "type": "text",
-      "prompt": "SearchTimeline Query ID",
+      "prompt": "Advanced: SearchTimeline ID",
       "placeholder": "Leave blank for bundled value",
       "value": "Bcw3RzK-PatNAmbnw54hFw"
     },
     {
+      "name": "user_by_screen_name_query_id",
+      "type": "text",
+      "prompt": "Advanced: User Lookup ID",
+      "placeholder": "Leave blank for bundled value",
+      "value": "2qvSHpkWTMS9i0zJAwDNiA"
+    },
+    {
+      "name": "user_tweets_query_id",
+      "type": "text",
+      "prompt": "Advanced: User Tweets ID",
+      "placeholder": "Leave blank for bundled value",
+      "value": "hr4gzZONlq23okjU8fIe_A"
+    },
+    {
+      "name": "tweet_detail_query_id",
+      "type": "text",
+      "prompt": "Advanced: Tweet Detail ID",
+      "placeholder": "Leave blank for bundled value",
+      "value": "97JF30KziU00483E_8elBA"
+    },
+    {
       "name": "bearer_token",
       "type": "text",
-      "prompt": "Bearer Token Override (optional)",
+      "prompt": "Advanced: Bearer Token",
       "placeholder": "Leave blank for bundled public web token"
     }
   ]

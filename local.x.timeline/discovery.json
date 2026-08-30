@@ -1,0 +1,18 @@
+{
+  "input": [
+    {
+      "match": "/^@([a-zA-Z0-9_]{1,15})$/",
+      "url": "https://x.com/$1"
+    }
+  ],
+  "sites": [
+    "x.com",
+    "twitter.com"
+  ],
+  "url": [
+    {
+      "extract": "/https:\\/\\/(?:www\\.)?(?:x|twitter)\\.com\\/([a-zA-Z0-9_]{1,15})(?:\\/?(?:[?#].*)?$|\\/status\\/\\d+)/",
+      "variable": "x_sources"
+    }
+  ]
+}

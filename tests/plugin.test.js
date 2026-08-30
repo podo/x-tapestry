@@ -3,10 +3,20 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
+const connectorDir = path.join(__dirname, "..", "local.x.timeline");
 const source = fs.readFileSync(
-  path.join(__dirname, "..", "local.x.timeline", "plugin.js"),
+  path.join(connectorDir, "plugin.js"),
   "utf8"
 );
+
+function readConnectorJson(fileName) {
+  return JSON.parse(fs.readFileSync(path.join(connectorDir, fileName), "utf8"));
+}
+
+function regexFromPattern(pattern) {
+  const lastSlash = pattern.lastIndexOf("/");
+  return new RegExp(pattern.slice(1, lastSlash), pattern.slice(lastSlash + 1) || "i");
+}
 
 function makeHomeHtml() {
   const key = Buffer.from(Array.from({ length: 32 }, (_, index) => index + 1)).toString("base64");
@@ -42,7 +52,9 @@ function tweetResult(overrides = {}) {
     reply_count: overrides.reply_count ?? 4,
     quote_count: overrides.quote_count ?? 1,
     in_reply_to_status_id_str: overrides.in_reply_to_status_id_str,
+    in_reply_to_screen_name: overrides.in_reply_to_screen_name,
     retweeted_status_result: overrides.retweeted_status_result,
+    possibly_sensitive: overrides.possibly_sensitive,
     entities: {
       urls: [
         {
@@ -69,6 +81,7 @@ function tweetResult(overrides = {}) {
     core: {
       user_results: {
         result: {
+          rest_id: overrides.user_id || `${username}-id`,
           core: {
             screen_name: username,
             name: overrides.name || "OpenAI",
@@ -129,6 +142,61 @@ function timelineBody(results, cursor = null) {
   };
 }
 
+function userTimelineBody(results, cursor = null) {
+  const search = timelineBody(results, cursor);
+  return {
+    data: {
+      user: {
+        result: {
+          timeline_v2: {
+            timeline: search.data.search_by_raw_query.search_timeline.timeline
+          }
+        }
+      }
+    }
+  };
+}
+
+function tweetDetailBody(results, cursor = null) {
+  const search = timelineBody(results, cursor);
+  return {
+    data: {
+      threaded_conversation_with_injections_v2: {
+        instructions: search.data.search_by_raw_query.search_timeline.timeline.instructions
+      }
+    }
+  };
+}
+
+function userProfileBody(handle, overrides = {}) {
+  const username = handle || overrides.username || "openai";
+  const name = overrides.name || (username === "podo" ? "Podo" : username === "sama" ? "Sam Altman" : "OpenAI");
+  const avatar = overrides.profile_image_url || `https://pbs.twimg.com/profile_images/${username}_normal.jpg`;
+  return {
+    data: {
+      user: {
+        result: {
+          rest_id: overrides.id || `${username}-user-id`,
+          core: {
+            screen_name: username,
+            name,
+            profile_image_url: avatar
+          },
+          legacy: {
+            screen_name: username,
+            name
+          }
+        }
+      }
+    }
+  };
+}
+
+function graphqlAction(url) {
+  const match = String(url).match(/\/i\/api\/graphql\/[^/]+\/([^?]+)/);
+  return match ? match[1] : null;
+}
+
 function makeContext(overrides = {}) {
   const state = new Map();
   const calls = [];
@@ -159,23 +227,43 @@ function makeContext(overrides = {}) {
     batch_size: "20",
     use_transaction_header: "on",
     search_query_id: "Bcw3RzK-PatNAmbnw54hFw",
+    user_by_screen_name_query_id: "",
+    user_tweets_query_id: "",
+    tweet_detail_query_id: "",
     bearer_token: "",
     timeline: timelineBody([tweetResult()]),
+    userTimeline: null,
+    threadTimeline: null,
+    accountSettings: { screen_name: "podo", name: "Podo" },
     sendRequest: async (url, method, parameters, headers) => {
       calls.push({ url, method, parameters, headers });
       if (url === "https://x.com/") return makeHomeHtml();
       if (url.includes("ondemand.s.abcdefa.js")) return ondemandJs;
+      if (url.includes("/account/settings.json")) return JSON.stringify(context.accountSettings);
+      const action = graphqlAction(url);
+      if (action === "UserByScreenName") {
+        const variables = JSON.parse(new URL(url).searchParams.get("variables"));
+        return JSON.stringify(userProfileBody(variables.screen_name));
+      }
+      if (action === "UserTweets") return JSON.stringify(context.userTimeline || context.timeline);
+      if (action === "TweetDetail") return JSON.stringify(context.threadTimeline || tweetDetailBody([tweetResult()]));
+      if (action === "SearchTimeline") return JSON.stringify(context.timeline);
       return JSON.stringify(context.timeline);
     },
     processVerification: value => { context.verification = value; },
     processResults: value => { context.results = value; },
     processError: error => { context.error = error; },
+    actionComplete: (value, error) => {
+      context.actionResult = value;
+      context.actionError = error;
+    },
     getItem: key => state.get(key) || null,
     setItem: (key, value) => state.set(key, value),
     Item: {
       createWithUriDate: (uri, date) => ({ uri, date })
     },
     Identity: {
+      create: (name, username, avatar, uri) => ({ name, username, avatar, uri }),
       createWithName: name => ({ name })
     },
     Annotation: {
@@ -213,31 +301,66 @@ async function settle() {
   }
 }
 
-function apiCall(context) {
-  return context._calls.find(call => call.url.includes("/i/api/graphql/"));
+function apiCall(context, action = null) {
+  return context._calls.find(call => (
+    call.url.includes("/i/api/graphql/")
+    && (!action || graphqlAction(call.url) === action)
+  ));
+}
+
+function apiCalls(context, action = null) {
+  return context._calls.filter(call => (
+    call.url.includes("/i/api/graphql/")
+    && (!action || graphqlAction(call.url) === action)
+  ));
 }
 
 async function run() {
+  const pluginConfig = readConnectorJson("plugin-config.json");
+  const uiConfig = readConnectorJson("ui-config.json");
+  const discovery = readConnectorJson("discovery.json");
+  const suggestions = readConnectorJson("suggestions.json");
+  const actions = readConnectorJson("actions.json");
+  const apps = readConnectorJson("apps.json");
+
+  assert.strictEqual(pluginConfig.provides_attachments, true);
+  assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
+  assert.strictEqual(pluginConfig.version, 2);
+  assert.ok(uiConfig.inputs.some(input => input.name === "x_sources"));
+  assert.ok(uiConfig.inputs.some(input => input.name === "user_by_screen_name_query_id"));
+  assert.ok(uiConfig.inputs.some(input => input.name === "user_tweets_query_id"));
+  assert.ok(uiConfig.inputs.some(input => input.name === "tweet_detail_query_id"));
+  assert.ok(discovery.sites.includes("x.com"));
+  assert.ok(discovery.sites.includes("twitter.com"));
+  assert.ok(discovery.input.some(input => input.url === "https://x.com/$1"));
+  assert.ok(suggestions.variables.some(variable => variable.title === "OpenAI + Sam"));
+  assert.ok(actions.items.some(action => action.id === "thread" && action.role === "context"));
+  assert.ok(apps.apps.some(app => app.name === "X" && app.template === "__URL__"));
+  assert.strictEqual("@openai".match(regexFromPattern(discovery.input[0].match))[1], "openai");
+  assert.strictEqual("https://x.com/openai".match(regexFromPattern(discovery.url[0].extract))[1], "openai");
+  assert.strictEqual("https://twitter.com/sama/status/123".match(regexFromPattern(discovery.url[0].extract))[1], "sama");
+
   const context = makeContext();
   vm.runInContext("verify()", context);
   await settle();
   assert.ifError(context.error);
   assert.strictEqual(context.verification.displayName, "X - @openai, @sama");
+  assert.strictEqual(context.verification.accountIdentity.username, "@podo");
+  assert.match(context.verification.accountIdentity.avatar, /podo_400x400\.jpg$/);
 
-  const verifyApi = apiCall(context);
-  assert.ok(verifyApi, "verify should call SearchTimeline");
-  assert.strictEqual(verifyApi.method, "GET");
-  assert.match(verifyApi.headers.Cookie, /auth_token=auth-token/);
-  assert.match(verifyApi.headers.Cookie, /ct0=csrf-token/);
-  assert.strictEqual(verifyApi.headers["x-csrf-token"], "csrf-token");
-  assert.ok(verifyApi.headers["x-client-transaction-id"]);
-  const variables = JSON.parse(new URL(verifyApi.url).searchParams.get("variables"));
-  assert.strictEqual(variables.product, "Latest");
-  assert.match(variables.rawQuery, /from:openai/);
-  assert.match(variables.rawQuery, /from:sama/);
-  assert.match(variables.rawQuery, /lang:en/);
-  assert.match(variables.rawQuery, /-filter:replies/);
-  assert.match(variables.rawQuery, /-filter:retweets/);
+  const verifyProfileApi = apiCall(context, "UserByScreenName");
+  assert.ok(verifyProfileApi, "verify should resolve configured handles");
+  assert.strictEqual(verifyProfileApi.method, "GET");
+  assert.match(verifyProfileApi.headers.Cookie, /auth_token=auth-token/);
+  assert.match(verifyProfileApi.headers.Cookie, /ct0=csrf-token/);
+  assert.strictEqual(verifyProfileApi.headers["x-csrf-token"], "csrf-token");
+  assert.ok(verifyProfileApi.headers["x-client-transaction-id"]);
+
+  const verifyTimelineApi = apiCall(context, "UserTweets");
+  assert.ok(verifyTimelineApi, "verify should call UserTweets");
+  const variables = JSON.parse(new URL(verifyTimelineApi.url).searchParams.get("variables"));
+  assert.strictEqual(variables.userId, "openai-user-id");
+  assert.strictEqual(variables.count, 1);
 
   vm.runInContext("load()", context);
   await settle();
@@ -252,7 +375,12 @@ async function run() {
   assert.doesNotMatch(item.body, /Open on X/);
   assert.strictEqual(item.author.name, "OpenAI");
   assert.strictEqual(item.author.username, "@openai");
+  assert.strictEqual(item.author.uri, "https://x.com/openai");
   assert.match(item.author.avatar, /_400x400\.jpg$/);
+  assert.deepStrictEqual(JSON.parse(item.actions.thread), {
+    tweetId: "1950000000000000001",
+    url: "https://x.com/openai/status/1950000000000000001"
+  });
   assert.strictEqual(item.attachments[0].url, "https://pbs.twimg.com/media/a.jpg");
   assert.strictEqual(item.attachments[0].mimeType, "image/jpeg");
   assert.strictEqual(item.attachments[0].text, "Alt text");
@@ -262,8 +390,9 @@ async function run() {
   assert.match(item.annotations[0].text, /12 likes/);
   assert.match(item.annotations[0].text, /1,234 views/);
 
-  const initialState = JSON.parse(context._state.get("syncStateV1"));
-  assert.strictEqual(initialState.highWaterId, "1950000000000000001");
+  const initialState = JSON.parse(context._state.get("syncStateV2"));
+  assert.strictEqual(initialState.highWaterBySource["handle:openai"], "1950000000000000001");
+  assert.strictEqual(initialState.highWaterBySource["handle:sama"], "1950000000000000001");
 
   context.timeline = timelineBody([
     tweetResult({ id: "1950000000000000003", fullText: "New post", favorite_count: 0, retweet_count: 0, reply_count: 0, quote_count: 0, views: 0 }),
@@ -274,8 +403,9 @@ async function run() {
   assert.ifError(context.error);
   assert.strictEqual(context.results.length, 1);
   assert.strictEqual(context.results[0].uri, "https://x.com/openai/status/1950000000000000003");
-  const nextState = JSON.parse(context._state.get("syncStateV1"));
-  assert.strictEqual(nextState.highWaterId, "1950000000000000003");
+  const nextState = JSON.parse(context._state.get("syncStateV2"));
+  assert.strictEqual(nextState.highWaterBySource["handle:openai"], "1950000000000000003");
+  assert.strictEqual(nextState.highWaterBySource["handle:sama"], "1950000000000000003");
 
   const rawSearch = makeContext({
     source_mode: "Search Query",
@@ -288,9 +418,11 @@ async function run() {
   vm.runInContext("verify()", rawSearch);
   await settle();
   assert.ifError(rawSearch.error);
-  const rawVariables = JSON.parse(new URL(apiCall(rawSearch).url).searchParams.get("variables"));
+  const rawSearchApi = apiCall(rawSearch, "SearchTimeline");
+  const rawVariables = JSON.parse(new URL(rawSearchApi.url).searchParams.get("variables"));
   assert.strictEqual(rawVariables.rawQuery, "from:openai build");
-  assert.ok(!apiCall(rawSearch).headers["x-client-transaction-id"]);
+  assert.strictEqual(rawVariables.product, "Latest");
+  assert.ok(!rawSearchApi.headers["x-client-transaction-id"]);
 
   const wrapped = makeContext({
     timeline: timelineBody([{ tweet: tweetResult({ id: "1950000000000000004" }) }]),
@@ -428,6 +560,73 @@ async function run() {
   assert.strictEqual(poll.results[0].attachments[0].options[1].votes, 8);
   assert.strictEqual(poll.results[0].attachments[0].endDate.toISOString(), "2027-01-15T08:00:00.000Z");
 
+  const replySensitive = makeContext({
+    include_replies: "on",
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000011",
+        fullText: "Hi @sama #AI $OPENAI",
+        in_reply_to_status_id_str: "1950000000000000010",
+        in_reply_to_screen_name: "sama",
+        possibly_sensitive: true,
+        legacy: { extended_entities: { media: [] }, entities: { urls: [] } }
+      })
+    ])
+  });
+  vm.runInContext("load()", replySensitive);
+  await settle();
+  assert.ifError(replySensitive.error);
+  assert.strictEqual(replySensitive.results[0].contentWarning, "Sensitive content");
+  assert.match(replySensitive.results[0].body, /href="https:\/\/x\.com\/sama">@sama<\/a>/);
+  assert.match(replySensitive.results[0].body, /href="https:\/\/x\.com\/hashtag\/AI">#AI<\/a>/);
+  assert.match(replySensitive.results[0].body, /href="https:\/\/x\.com\/search\?q=%24OPENAI">\$OPENAI<\/a>/);
+  assert.strictEqual(replySensitive.results[0].annotations[0].text, "Reply to @sama");
+
+  const repost = makeContext({
+    include_retweets: "on",
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000012",
+        username: "podo",
+        name: "Podo",
+        created_at: "Sat Aug 29 08:00:00 +0000 2026",
+        legacy: {
+          retweeted_status_result: {
+            result: tweetResult({
+              id: "1950000000000000013",
+              username: "sama",
+              name: "Sam Altman",
+              fullText: "Original post",
+              legacy: { extended_entities: { media: [] }, entities: { urls: [] } }
+            })
+          }
+        }
+      })
+    ])
+  });
+  vm.runInContext("load()", repost);
+  await settle();
+  assert.ifError(repost.error);
+  assert.strictEqual(repost.results[0].uri, "https://x.com/sama/status/1950000000000000013");
+  assert.strictEqual(repost.results[0].date.toISOString(), "2026-08-29T08:00:00.000Z");
+  assert.strictEqual(repost.results[0].annotations[0].text, "@podo Reposted");
+  assert.strictEqual(repost.results[0].annotations[0].uri, "https://x.com/podo");
+
+  const threadContext = makeContext({
+    threadTimeline: tweetDetailBody([
+      tweetResult({ id: "1950000000000000014", fullText: "First", legacy: { extended_entities: { media: [] }, entities: { urls: [] } } }),
+      tweetResult({ id: "1950000000000000015", username: "sama", name: "Sam Altman", fullText: "Second", legacy: { extended_entities: { media: [] }, entities: { urls: [] } } })
+    ])
+  });
+  vm.runInContext("performAction('thread', JSON.stringify({ tweetId: '1950000000000000014' }), null)", threadContext);
+  await settle();
+  assert.ifError(threadContext.actionError);
+  assert.strictEqual(threadContext.actionResult.length, 2);
+  const threadApi = apiCall(threadContext, "TweetDetail");
+  assert.ok(threadApi, "thread action should call TweetDetail");
+  const threadVariables = JSON.parse(new URL(threadApi.url).searchParams.get("variables"));
+  assert.strictEqual(threadVariables.focalTweetId, "1950000000000000014");
+
   const cookieOnly = makeContext({
     auth_token: "",
     ct0: "",
@@ -459,12 +658,49 @@ async function run() {
   await settle();
   assert.match(queryIdError.error.message, /query ID/i);
 
-  const retry = makeContext();
+  const discovered = makeContext({
+    x_sources: "openai",
+    use_transaction_header: "off"
+  });
+  let staleUserTweetsCalls = 0;
+  discovered.sendRequest = async (url, method, parameters, headers) => {
+    discovered._calls.push({ url, method, parameters, headers });
+    if (url === "https://x.com/") {
+      return '<script src="https://abs.twimg.com/responsive-web/client-web/main.123.js"></script>';
+    }
+    if (url.includes("main.123.js")) {
+      return 'const query={operationName:"UserTweets",queryId:"freshUserTweets"};';
+    }
+    const action = graphqlAction(url);
+    if (action === "UserByScreenName") return JSON.stringify(userProfileBody("openai"));
+    if (action === "UserTweets" && !url.includes("/freshUserTweets/")) {
+      staleUserTweetsCalls += 1;
+      return JSON.stringify({ errors: [{ message: "Variable $count must be defined" }] });
+    }
+    if (action === "UserTweets") {
+      return JSON.stringify(userTimelineBody([
+        tweetResult({ id: "1950000000000000016", legacy: { extended_entities: { media: [] }, entities: { urls: [] } } })
+      ]));
+    }
+    return JSON.stringify(timelineBody([]));
+  };
+  vm.runInContext("load()", discovered);
+  await settle();
+  assert.ifError(discovered.error);
+  assert.strictEqual(staleUserTweetsCalls, 1);
+  assert.ok(apiCalls(discovered, "UserTweets").some(call => call.url.includes("/freshUserTweets/UserTweets")));
+  assert.strictEqual(JSON.parse(discovered._state.get("queryIdCacheV1")).UserTweets.queryId, "freshUserTweets");
+
+  const retry = makeContext({
+    source_mode: "Search Query",
+    x_sources: "from:openai"
+  });
   let attempts = 0;
   retry.sendRequest = async (url, method, parameters, headers) => {
     retry._calls.push({ url, method, parameters, headers });
     if (url === "https://x.com/") return makeHomeHtml();
     if (url.includes("ondemand.s.abcdefa.js")) return ondemandJs;
+    if (url.includes("/account/settings.json")) return JSON.stringify(retry.accountSettings);
     attempts += 1;
     if (attempts === 1) {
       return JSON.stringify({ errors: [{ code: 344, message: "You have reached your daily limit" }] });

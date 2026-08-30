@@ -19,6 +19,6 @@ jobs:
         run: node tests/plugin.test.js
       - name: Validate configuration
         run: |
-          node -e "for (const file of ['local.x.timeline/plugin-config.json', 'local.x.timeline/ui-config.json']) JSON.parse(require('fs').readFileSync(file, 'utf8'))"
+          node -e "for (const file of ['local.x.timeline/plugin-config.json', 'local.x.timeline/ui-config.json', 'local.x.timeline/discovery.json', 'local.x.timeline/suggestions.json', 'local.x.timeline/actions.json', 'local.x.timeline/apps.json']) JSON.parse(require('fs').readFileSync(file, 'utf8'))"
       - name: Build installable connector
         run: bash scripts/build.sh
