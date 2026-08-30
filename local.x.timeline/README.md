@@ -37,7 +37,8 @@ or include them in screenshots.
 - Native post-style Tapestry items with author identity and avatar
 - Optional media attachments from post images, videos, GIFs, and note posts
 - Video/GIF attachments include explicit media type and thumbnail metadata
-- Optional link cards for external links when no richer attachment is present
+- X-style URL preview cards that hide the trailing preview URL from post text
+- Link cards use X-provided title, description, site, author, image, and aspect metadata when available
 - Quoted posts are attached as Tapestry quoted-item previews
 - Poll cards are attached when X includes poll metadata in the response
 - Thread context action for opening a conversation inside Tapestry
@@ -45,6 +46,7 @@ or include them in screenshots.
 - Linked URLs, handles, hashtags, and cashtags in post text
 - Content warnings for sensitive posts when X marks them
 - Incremental refresh by newest post ID per source, with paginated catch-up
+- Connector sync state was bumped in v1.2.0 so existing feeds reload recent items with updated card/avatar rendering
 - Configurable advanced query IDs for when X rotates web GraphQL IDs
 
 ## Reliability Notes

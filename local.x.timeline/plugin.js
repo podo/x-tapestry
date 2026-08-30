@@ -11,7 +11,7 @@ const defaultTweetDetailQueryId = "97JF30KziU00483E_8elBA";
 const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
-const syncStateKey = "syncStateV2";
+const syncStateKey = "syncStateV3";
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const transactionCacheTtlMilliseconds = 15 * 60 * 1000;
@@ -653,14 +653,15 @@ function normalizeTweet(rawResult, includeQuoted) {
     return retweeted;
   }
 
-  const media = extractMedia(result, legacy);
-  const externalUrls = dedupeStrings(extractExternalUrls(result, legacy));
-  const card = extractCard(result, externalUrls);
-  const poll = extractPoll(result);
   const note = result.note_tweet
     && result.note_tweet.note_tweet_results
     && result.note_tweet.note_tweet_results.result;
-  const text = expandedTweetText(legacy.full_text || "", legacy.entities, note);
+  const urlMappings = tweetUrlMappings(legacy.entities, note);
+  const text = expandedTweetText(legacy.full_text || "", legacy.entities, note, urlMappings);
+  const media = extractMedia(result, legacy);
+  const externalUrls = dedupeStrings(extractExternalUrls(urlMappings));
+  const card = extractCard(result, externalUrls, urlMappings);
+  const poll = extractPoll(result);
   const quotedRaw = result.quoted_status_result && result.quoted_status_result.result;
   const quoted = includeQuoted && quotedRaw ? normalizeTweet(quotedRaw, false) : null;
 
@@ -739,14 +740,12 @@ function normalizeUserProfile(rawUser) {
   };
 }
 
-function expandedTweetText(fullText, legacyEntities, note) {
+function expandedTweetText(fullText, legacyEntities, note, mappings) {
   let text = note && note.text ? note.text : fullText;
-  const mappings = [];
-  mappings.push(...urlMappings(legacyEntities && legacyEntities.urls));
-  if (note && note.entity_set) mappings.push(...urlMappings(note.entity_set.urls));
-  mappings.sort((left, right) => right.source.length - left.source.length);
+  const replacements = mappings || tweetUrlMappings(legacyEntities, note);
+  replacements.sort((left, right) => right.source.length - left.source.length);
 
-  for (const mapping of mappings) {
+  for (const mapping of replacements) {
     if (!mapping.source || !mapping.expanded) continue;
     text = text.split(mapping.source).join(mapping.expanded);
   }
@@ -754,27 +753,28 @@ function expandedTweetText(fullText, legacyEntities, note) {
   return text || "";
 }
 
+function tweetUrlMappings(legacyEntities, note) {
+  const mappings = [];
+  mappings.push(...urlMappings(legacyEntities && legacyEntities.urls));
+  if (note && note.entity_set) mappings.push(...urlMappings(note.entity_set.urls));
+  return mappings;
+}
+
 function urlMappings(urls) {
   if (!Array.isArray(urls)) return [];
   return urls.map(url => ({
     source: url && url.url ? String(url.url) : "",
-    expanded: url && (url.expanded_url || url.url) ? String(url.expanded_url || url.url) : ""
+    expanded: url && (url.unwound_url || url.expanded_url || url.url)
+      ? String(url.unwound_url || url.expanded_url || url.url)
+      : "",
+    display: url && url.display_url ? String(url.display_url) : ""
   })).filter(mapping => mapping.source && mapping.expanded);
 }
 
-function extractExternalUrls(result, legacy) {
+function extractExternalUrls(mappings) {
   const urls = [];
-  const entities = legacy && legacy.entities ? legacy.entities : {};
-  const note = result && result.note_tweet
-    && result.note_tweet.note_tweet_results
-    && result.note_tweet.note_tweet_results.result;
-  for (const mapping of urlMappings(entities.urls)) {
+  for (const mapping of mappings || []) {
     if (isExternalWebUrl(mapping.expanded)) urls.push(mapping.expanded);
-  }
-  if (note && note.entity_set) {
-    for (const mapping of urlMappings(note.entity_set.urls)) {
-      if (isExternalWebUrl(mapping.expanded)) urls.push(mapping.expanded);
-    }
   }
   return urls;
 }
@@ -894,23 +894,53 @@ function normalizedPhotoUrl(value) {
   return value;
 }
 
-function extractCard(result, externalUrls) {
+function extractCard(result, externalUrls, mappings) {
   const values = cardBindingValues(result);
-  const url = firstExternalCardUrl(values) || (externalUrls && externalUrls[0]) || null;
+  const url = firstExternalCardUrl(values, mappings) || firstExternalUrl(externalUrls);
   if (!isExternalWebUrl(url)) return null;
 
   const image = firstCardImage(values);
+  const title = firstCardText(values, [
+    "title",
+    "card_title",
+    "player_title",
+    "app_name",
+    "promo_title"
+  ]);
+  const subtitle = firstCardText(values, [
+    "description",
+    "card_description",
+    "player_description",
+    "app_description",
+    "promo_description"
+  ]);
+  const siteName = firstCardText(values, [
+    "site_name",
+    "site",
+    "domain",
+    "publisher",
+    "publisher_name",
+    "vanity_url"
+  ]) || urlHost(url);
+  const authorName = firstCardText(values, [
+    "author_name",
+    "author",
+    "creator",
+    "creator_name"
+  ]);
+
   return {
     url,
-    type: cardString(values.type) || "website",
-    title: cardString(values.title),
-    subtitle: cardString(values.description),
-    siteName: cardString(values.site_name) || cardString(values.domain),
-    authorName: cardString(values.author_name),
+    type: normalizedCardType(values, image),
+    title,
+    subtitle,
+    siteName,
+    authorName,
     image: image ? image.url : null,
     aspectSize: image && image.width > 0 && image.height > 0
       ? { width: image.width, height: image.height }
-      : null
+      : null,
+    hiddenUrls: cardHiddenUrls(url, externalUrls, values, mappings)
   };
 }
 
@@ -935,27 +965,95 @@ function cardBindingValues(result) {
   return values;
 }
 
-function firstExternalCardUrl(values) {
-  const keys = ["card_url", "expanded_url", "url", "vanity_url"];
+function firstExternalCardUrl(values, mappings) {
+  const keys = [
+    "card_url",
+    "expanded_url",
+    "url",
+    "vanity_url",
+    "player_url",
+    "player_stream_url",
+    "site_url",
+    "app_url"
+  ];
   for (const key of keys) {
     const value = cardString(values[key]);
+    const expanded = expandedUrlForSource(value, mappings);
+    if (isExternalWebUrl(expanded)) return expanded;
     if (isExternalWebUrl(value)) return value;
   }
   return null;
 }
 
+function firstExternalUrl(values) {
+  for (const value of values || []) {
+    if (isExternalWebUrl(value)) return value;
+  }
+  return null;
+}
+
+function firstCardText(values, keys) {
+  for (const key of keys) {
+    const text = normalizedCardText(cardString(values[key]));
+    if (text) return text;
+  }
+  return "";
+}
+
+function normalizedCardType(values, image) {
+  const raw = firstCardText(values, ["type", "card_type", "card_name", "name"]).toLowerCase();
+  if (/player|video|broadcast/.test(raw)) return "video.other";
+  if (/audio|space/.test(raw)) return "audio.other";
+  if (/photo|image/.test(raw) && !image) return "image";
+  return "website";
+}
+
+function expandedUrlForSource(value, mappings) {
+  if (!value) return null;
+  for (const mapping of mappings || []) {
+    if (mapping.source === value || mapping.expanded === value) return mapping.expanded;
+  }
+  return null;
+}
+
+function cardHiddenUrls(url, externalUrls, values, mappings) {
+  const urls = [url];
+  for (const candidate of externalUrls || []) {
+    if (equivalentWebUrl(candidate, url)) urls.push(candidate);
+  }
+  const cardUrl = cardString(values.card_url);
+  const expanded = expandedUrlForSource(cardUrl, mappings);
+  if (expanded && equivalentWebUrl(expanded, url)) urls.push(expanded);
+  return dedupeStrings(urls);
+}
+
 function firstCardImage(values) {
   const keys = [
     "thumbnail_image_original",
+    "thumbnail_image_x_large",
     "thumbnail_image_large",
+    "thumbnail_image",
     "summary_photo_image_original",
     "summary_photo_image_large",
+    "summary_photo_image",
     "player_image_original",
     "player_image_large",
-    "photo_image_full_size_original"
+    "player_image",
+    "photo_image_full_size_original",
+    "photo_image_full_size",
+    "promo_image_original",
+    "promo_image",
+    "app_image",
+    "app_icon"
   ];
 
   for (const key of keys) {
+    const image = cardImage(values[key]);
+    if (image) return image;
+  }
+
+  for (const key of Object.keys(values)) {
+    if (!/(image|thumbnail|photo|icon)/i.test(key) || /color/i.test(key)) continue;
     const image = cardImage(values[key]);
     if (image) return image;
   }
@@ -983,6 +1081,12 @@ function cardString(value) {
   if (value.long_value != null) return String(value.long_value);
   if (value.image_value && value.image_value.url) return String(value.image_value.url);
   return "";
+}
+
+function normalizedCardText(value) {
+  const text = String(value || "").trim();
+  if (!text || /^https?:\/\//i.test(text)) return "";
+  return htmlDecode(text);
 }
 
 function extractPoll(result) {
@@ -1038,7 +1142,8 @@ function bottomCursor(instructions) {
 
 function tweetToItem(tweet) {
   const item = Item.createWithUriDate(tweet.url, tweet.date || new Date());
-  item.body = tweetBody(tweet);
+  const body = tweetBody(tweet);
+  if (body) item.body = body;
   if (tweet.contentWarning) item.contentWarning = tweet.contentWarning;
 
   item.author = tweetIdentity(tweet);
@@ -1055,7 +1160,15 @@ function tweetToItem(tweet) {
 }
 
 function tweetBody(tweet) {
-  return `<p>${linkifiedText(tweet.text || "")}</p>`;
+  const text = tweetBodyText(tweet);
+  if (!text.trim()) return "";
+  return `<p>${linkifiedText(text)}</p>`;
+}
+
+function tweetBodyText(tweet) {
+  const card = linkCardForTweet(tweet);
+  const text = tweet && tweet.text ? tweet.text : "";
+  return card ? textWithoutCardUrl(text, card.hiddenUrls || [card.url]) : text;
 }
 
 function tweetIdentity(tweet) {
@@ -1065,9 +1178,6 @@ function tweetIdentity(tweet) {
 }
 
 function createIdentity(name, username, avatar, uri) {
-  if (typeof Identity.create === "function") {
-    return Identity.create(name, username, avatar, uri);
-  }
   const identity = Identity.createWithName(name);
   if (username) identity.username = username;
   if (avatar) identity.avatar = avatar;
@@ -1162,16 +1272,13 @@ function tweetPollAttachment(tweet) {
 }
 
 function tweetLinkAttachment(tweet) {
-  if (!showLinkCards() || typeof LinkAttachment === "undefined") return null;
+  const card = linkCardForTweet(tweet);
+  if (!card) return null;
 
-  const card = tweet.card || {};
-  const url = card.url || (tweet.externalUrls && tweet.externalUrls[0]);
-  if (!isExternalWebUrl(url)) return null;
-
-  const attachment = LinkAttachment.createWithUrl(url);
-  attachment.type = card.type || "website";
-  attachment.title = card.title || urlHost(url) || "Link";
-  attachment.subtitle = card.subtitle || tweet.text || "";
+  const attachment = LinkAttachment.createWithUrl(card.url);
+  if (card.type) attachment.type = card.type;
+  if (card.title) attachment.title = card.title;
+  if (card.subtitle) attachment.subtitle = card.subtitle;
   if (card.siteName) attachment.siteName = card.siteName;
   if (card.authorName) attachment.authorName = card.authorName;
   if (card.image) attachment.image = card.image;
@@ -1179,11 +1286,53 @@ function tweetLinkAttachment(tweet) {
   return attachment;
 }
 
+function linkCardForTweet(tweet) {
+  if (!showLinkCards() || typeof LinkAttachment === "undefined" || !tweet) return null;
+  if (hasRenderableMedia(tweet) || hasRenderablePoll(tweet)) return null;
+
+  const card = tweet.card || {};
+  const url = card.url || firstExternalUrl(tweet.externalUrls);
+  if (!isExternalWebUrl(url)) return null;
+  const hasXCard = Boolean(card.url);
+
+  return {
+    url,
+    type: hasXCard ? (card.type || "website") : "",
+    title: card.title || "",
+    subtitle: card.subtitle || "",
+    siteName: hasXCard ? (card.siteName || urlHost(url) || "") : "",
+    authorName: card.authorName || "",
+    image: card.image || null,
+    aspectSize: card.aspectSize || null,
+    hiddenUrls: card.hiddenUrls || [url]
+  };
+}
+
+function hasRenderableMedia(tweet) {
+  return Boolean(
+    showMedia()
+    && typeof MediaAttachment !== "undefined"
+    && tweet
+    && tweet.media
+    && tweet.media.length > 0
+  );
+}
+
+function hasRenderablePoll(tweet) {
+  return Boolean(
+    tweet
+    && tweet.poll
+    && typeof PollAttachment !== "undefined"
+    && typeof PollOption !== "undefined"
+  );
+}
+
 function quotedTweetAttachment(tweet) {
   if (!tweet.quoted || typeof Item === "undefined") return null;
 
   const quote = Item.createWithUriDate(tweet.quoted.url, tweet.quoted.date || new Date());
-  quote.body = tweetBody(tweet.quoted);
+  const body = tweetBody(tweet.quoted);
+  if (body) quote.body = body;
   if (tweet.quoted.contentWarning) quote.contentWarning = tweet.quoted.contentWarning;
   quote.author = tweetIdentity(tweet.quoted);
 
@@ -1917,6 +2066,71 @@ function urlHost(value) {
   catch (error) {
     return null;
   }
+}
+
+function equivalentWebUrl(left, right) {
+  const a = normalizedUrlForCompare(left);
+  const b = normalizedUrlForCompare(right);
+  return Boolean(a && b && a === b);
+}
+
+function normalizedUrlForCompare(value) {
+  if (!isWebUrl(value)) return null;
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    url.hostname = url.hostname.toLowerCase();
+    if (url.pathname !== "/") url.pathname = url.pathname.replace(/\/+$/, "");
+    return url.toString();
+  }
+  catch (error) {
+    return null;
+  }
+}
+
+function textWithoutCardUrl(value, hiddenUrls) {
+  let text = String(value || "");
+  const variantValues = [];
+  for (const url of hiddenUrls || []) {
+    variantValues.push(...urlVariants(url));
+  }
+  const variants = dedupeStrings(variantValues).sort((left, right) => right.length - left.length);
+
+  for (const variant of variants) {
+    const index = text.lastIndexOf(variant);
+    if (index < 0) continue;
+
+    const before = text.slice(0, index);
+    const after = text.slice(index + variant.length);
+    if (before && !/\s$/.test(before)) continue;
+    if (!/^[\s),.!?:;]*$/.test(after)) continue;
+
+    text = before.trimEnd();
+    break;
+  }
+
+  return text;
+}
+
+function urlVariants(value) {
+  if (!isWebUrl(value)) return [];
+  const variants = [String(value)];
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    variants.push(url.toString());
+    if (url.pathname === "/") {
+      variants.push(`${url.protocol}//${url.host}`);
+    }
+    else {
+      const withoutTrailingSlash = url.toString().replace(/\/$/, "");
+      variants.push(withoutTrailingSlash);
+    }
+  }
+  catch (error) {
+    return variants;
+  }
+  return variants.filter(Boolean);
 }
 
 function linkifiedText(value) {

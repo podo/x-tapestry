@@ -117,6 +117,14 @@ function imageValue(url, width, height) {
   return { image_value: { url, width, height } };
 }
 
+function urlEntity(url, expandedUrl, displayUrl = null) {
+  return {
+    url,
+    expanded_url: expandedUrl,
+    display_url: displayUrl || expandedUrl.replace(/^https?:\/\//, "")
+  };
+}
+
 function timelineBody(results, cursor = null) {
   const entries = results.map(result => ({
     entryId: `tweet-${result.rest_id || result.tweet?.rest_id}`,
@@ -263,7 +271,9 @@ function makeContext(overrides = {}) {
       createWithUriDate: (uri, date) => ({ uri, date })
     },
     Identity: {
-      create: (name, username, avatar, uri) => ({ name, username, avatar, uri }),
+      create: () => {
+        throw new Error("Use createWithName and explicit identity properties for avatar compatibility.");
+      },
       createWithName: name => ({ name })
     },
     Annotation: {
@@ -325,7 +335,7 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 2);
+  assert.strictEqual(pluginConfig.version, 3);
   assert.ok(uiConfig.inputs.some(input => input.name === "x_sources"));
   assert.ok(uiConfig.inputs.some(input => input.name === "user_by_screen_name_query_id"));
   assert.ok(uiConfig.inputs.some(input => input.name === "user_tweets_query_id"));
@@ -390,7 +400,7 @@ async function run() {
   assert.match(item.annotations[0].text, /12 likes/);
   assert.match(item.annotations[0].text, /1,234 views/);
 
-  const initialState = JSON.parse(context._state.get("syncStateV2"));
+  const initialState = JSON.parse(context._state.get("syncStateV3"));
   assert.strictEqual(initialState.highWaterBySource["handle:openai"], "1950000000000000001");
   assert.strictEqual(initialState.highWaterBySource["handle:sama"], "1950000000000000001");
 
@@ -403,7 +413,7 @@ async function run() {
   assert.ifError(context.error);
   assert.strictEqual(context.results.length, 1);
   assert.strictEqual(context.results[0].uri, "https://x.com/openai/status/1950000000000000003");
-  const nextState = JSON.parse(context._state.get("syncStateV2"));
+  const nextState = JSON.parse(context._state.get("syncStateV3"));
   assert.strictEqual(nextState.highWaterBySource["handle:openai"], "1950000000000000003");
   assert.strictEqual(nextState.highWaterBySource["handle:sama"], "1950000000000000003");
 
@@ -433,12 +443,21 @@ async function run() {
   assert.ifError(wrapped.error);
   assert.strictEqual(wrapped.results[0].attachments[0].kind, "link");
   assert.strictEqual(wrapped.results[0].attachments[0].url, "https://example.com/article");
+  assert.doesNotMatch(wrapped.results[0].body, /example\.com\/article/);
 
   const linkCard = makeContext({
     timeline: timelineBody([
       tweetResult({
         id: "1950000000000000005",
-        legacy: { extended_entities: { media: [] } },
+        fullText: "Read this\nhttps://t.co/a",
+        legacy: {
+          entities: {
+            urls: [
+              urlEntity("https://t.co/a", "https://example.com/card", "example.com/card")
+            ]
+          },
+          extended_entities: { media: [] }
+        },
         card: card({
           card_url: stringValue("https://example.com/card"),
           title: stringValue("Card title"),
@@ -461,6 +480,94 @@ async function run() {
   assert.strictEqual(linkCard.results[0].attachments[0].authorName, "Example Author");
   assert.strictEqual(linkCard.results[0].attachments[0].image, "https://pbs.twimg.com/card_img/abc?format=jpg&name=small");
   assert.strictEqual(linkCard.results[0].attachments[0].aspectSize.width, 640);
+  assert.strictEqual(linkCard.results[0].body, "<p>Read this</p>");
+
+  const multiLinkCard = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000017",
+        fullText: "First https://t.co/b\nhttps://t.co/a",
+        legacy: {
+          entities: {
+            urls: [
+              urlEntity("https://t.co/b", "https://example.net/other", "example.net/other"),
+              urlEntity("https://t.co/a", "https://example.com/card", "example.com/card")
+            ]
+          },
+          extended_entities: { media: [] }
+        },
+        card: card({
+          card_url: stringValue("https://t.co/a"),
+          title: stringValue("Primary card"),
+          site_name: stringValue("Example")
+        })
+      })
+    ])
+  });
+  vm.runInContext("load()", multiLinkCard);
+  await settle();
+  assert.ifError(multiLinkCard.error);
+  assert.strictEqual(multiLinkCard.results[0].attachments[0].url, "https://example.com/card");
+  assert.match(multiLinkCard.results[0].body, /example\.net\/other/);
+  assert.doesNotMatch(multiLinkCard.results[0].body, /example\.com\/card/);
+
+  const playerCard = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000018",
+        fullText: "Watch this https://t.co/player",
+        legacy: {
+          entities: {
+            urls: [
+              urlEntity("https://t.co/player", "https://video.example.com/watch/1", "video.example.com/watch/1")
+            ]
+          },
+          extended_entities: { media: [] }
+        },
+        card: card({
+          card_url: stringValue("https://video.example.com/watch/1"),
+          type: stringValue("player"),
+          player_title: stringValue("Player title"),
+          player_description: stringValue("Player summary"),
+          player_image: imageValue("https://pbs.twimg.com/card_img/player?format=jpg&name=small", 1280, 720)
+        })
+      })
+    ])
+  });
+  vm.runInContext("load()", playerCard);
+  await settle();
+  assert.ifError(playerCard.error);
+  assert.strictEqual(playerCard.results[0].attachments[0].type, "video.other");
+  assert.strictEqual(playerCard.results[0].attachments[0].title, "Player title");
+  assert.strictEqual(playerCard.results[0].attachments[0].subtitle, "Player summary");
+  assert.strictEqual(playerCard.results[0].attachments[0].aspectSize.height, 720);
+  assert.strictEqual(playerCard.results[0].body, "<p>Watch this</p>");
+
+  const urlOnlyCard = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000019",
+        fullText: "https://t.co/only",
+        legacy: {
+          entities: {
+            urls: [
+              urlEntity("https://t.co/only", "https://example.com/only", "example.com/only")
+            ]
+          },
+          extended_entities: { media: [] }
+        },
+        card: card({
+          card_url: stringValue("https://t.co/only"),
+          title: stringValue("Only URL")
+        })
+      })
+    ])
+  });
+  vm.runInContext("load()", urlOnlyCard);
+  await settle();
+  assert.ifError(urlOnlyCard.error);
+  assert.strictEqual(urlOnlyCard.results[0].attachments[0].url, "https://example.com/only");
+  assert.ok(!urlOnlyCard.results[0].body);
 
   const video = makeContext({
     timeline: timelineBody([
