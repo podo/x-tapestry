@@ -51,7 +51,7 @@ or include them in screenshots.
 - Content warnings for sensitive posts when X marks them
 - Incremental refresh by newest post ID per source, with paginated catch-up
 - Promoted home-feed entries are filtered out before they become Tapestry items
-- Connector sync state was bumped in v1.3.0 so existing feeds reload recent items with updated feed/card/avatar rendering
+- Connector sync state was bumped in v1.3.1 so existing feeds reload recent items with updated feed/card/avatar rendering
 - Configurable advanced query IDs for when X rotates web GraphQL IDs
 
 ## Reliability Notes

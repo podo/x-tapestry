@@ -12,7 +12,7 @@ const defaultTweetDetailQueryId = "97JF30KziU00483E_8elBA";
 const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
-const syncStateKey = "syncStateV5";
+const syncStateKey = "syncStateV6";
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
@@ -363,6 +363,11 @@ async function searchTimelinePage(query, count, cursor, credentials) {
 async function homeLatestTimelinePage(count, cursor, credentials) {
   const variables = {
     count,
+    includePromotedContent: false,
+    latestControlAvailable: true,
+    requestContext: "launch",
+    withCommunity: true,
+    enableRanking: false,
     seenTweetIds: []
   };
   if (cursor) variables.cursor = cursor;
@@ -541,12 +546,6 @@ async function graphqlGet(action, queryId, variables, features, fieldToggles, cr
 }
 
 async function graphqlPost(action, queryId, variables, features, fieldToggles, credentials) {
-  const body = {
-    variables
-  };
-  if (features) body.features = features;
-  if (fieldToggles) body.fieldToggles = fieldToggles;
-
   let lastError = null;
   let activeQueryId = queryId;
 
@@ -554,6 +553,12 @@ async function graphqlPost(action, queryId, variables, features, fieldToggles, c
     const path = `/i/api/graphql/${activeQueryId}/${action}`;
     const url = `${apiBase}/${activeQueryId}/${action}`;
     const headers = await graphQlHeaders("POST", path, credentials);
+    const body = {
+      variables,
+      queryId: activeQueryId
+    };
+    if (features) body.features = features;
+    if (fieldToggles) body.fieldToggles = fieldToggles;
     headers["Content-Type"] = "application/json";
     let text;
     try {

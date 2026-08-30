@@ -377,7 +377,7 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 5);
+  assert.strictEqual(pluginConfig.version, 6);
   const sourceModeInput = uiConfig.inputs.find(input => input.name === "source_mode");
   assert.ok(sourceModeInput.choices.includes("Following Feed"));
   assert.ok(sourceModeInput.choices.includes("Individual Accounts"));
@@ -449,7 +449,7 @@ async function run() {
   assert.match(item.annotations[0].text, /12 likes/);
   assert.match(item.annotations[0].text, /1,234 views/);
 
-  const initialState = JSON.parse(context._state.get("syncStateV5"));
+  const initialState = JSON.parse(context._state.get("syncStateV6"));
   assert.strictEqual(initialState.highWaterBySource["handle:openai"], "1950000000000000001");
   assert.strictEqual(initialState.highWaterBySource["handle:sama"], "1950000000000000001");
 
@@ -462,7 +462,7 @@ async function run() {
   assert.ifError(context.error);
   assert.strictEqual(context.results.length, 1);
   assert.strictEqual(context.results[0].uri, "https://x.com/openai/status/1950000000000000003");
-  const nextState = JSON.parse(context._state.get("syncStateV5"));
+  const nextState = JSON.parse(context._state.get("syncStateV6"));
   assert.strictEqual(nextState.highWaterBySource["handle:openai"], "1950000000000000003");
   assert.strictEqual(nextState.highWaterBySource["handle:sama"], "1950000000000000003");
 
@@ -537,7 +537,13 @@ async function run() {
   assert.strictEqual(homeVerifyApi.headers["Content-Type"], "application/json");
   const homeVerifyVariables = graphqlVariables(homeVerifyApi);
   assert.strictEqual(homeVerifyVariables.count, 1);
+  assert.strictEqual(homeVerifyVariables.includePromotedContent, false);
+  assert.strictEqual(homeVerifyVariables.latestControlAvailable, true);
+  assert.strictEqual(homeVerifyVariables.requestContext, "launch");
+  assert.strictEqual(homeVerifyVariables.withCommunity, true);
+  assert.strictEqual(homeVerifyVariables.enableRanking, false);
   assert.deepStrictEqual(homeVerifyVariables.seenTweetIds, []);
+  assert.strictEqual(JSON.parse(homeVerifyApi.parameters).queryId, "BKB7oi212Fi7kQtCBGE4zA");
 
   vm.runInContext("load()", following);
   await settle();
@@ -556,7 +562,12 @@ async function run() {
   const homeLoadApi = apiCalls(following, "HomeLatestTimeline").pop();
   const homeLoadVariables = graphqlVariables(homeLoadApi);
   assert.strictEqual(homeLoadVariables.count, 20);
-  assert.deepStrictEqual(JSON.parse(following._state.get("syncStateV5")).highWaterBySource.following, "1950000000000000022");
+  assert.strictEqual(homeLoadVariables.includePromotedContent, false);
+  assert.strictEqual(homeLoadVariables.latestControlAvailable, true);
+  assert.strictEqual(homeLoadVariables.requestContext, "launch");
+  assert.strictEqual(homeLoadVariables.withCommunity, true);
+  assert.strictEqual(homeLoadVariables.enableRanking, false);
+  assert.deepStrictEqual(JSON.parse(following._state.get("syncStateV6")).highWaterBySource.following, "1950000000000000022");
 
   const wrapped = makeContext({
     timeline: timelineBody([{ tweet: tweetResult({ id: "1950000000000000004" }) }]),

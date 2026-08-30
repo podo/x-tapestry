@@ -14,7 +14,7 @@ The mocked suite verifies:
 - Connector metadata, UI inputs, suggestions, discovery, actions, and native-app mappings
 - Cookie-header parsing and missing-credential errors
 - Following Feed, Individual Accounts, and Search Query request paths
-- Following Feed GraphQL uses a JSON POST body with the expected variables
+- Following Feed GraphQL uses a JSON POST body with query ID and the expected variables
 - Home feed parsing from `data.home.home_timeline_urt.instructions`
 - Promoted home-feed entries are filtered before rendering
 - Incremental sync state and connector version bumps
