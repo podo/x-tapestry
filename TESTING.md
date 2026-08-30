@@ -18,13 +18,14 @@ The mocked suite verifies:
 - Home feed parsing from `data.home.home_timeline_urt.instructions`
 - Promoted home-feed entries are filtered before rendering
 - Incremental sync state and connector version bumps
-- Author identity fields: name, username, URI, and avatar
+- Author identity fields: name, username, URI, and avatar, including the constructor path used by current Loom
 - Stable X profile-image URLs, including the newer `avatar.image_url` field
 - Post body escaping, linkification, and media/preview URL removal
 - Legacy and modern X media entities for photos, videos, GIF thumbnails, poll, quoted-post, and metric annotations
 - Modern detail-style tweets, `core.user_result` authors, and nested `media_info.video_info` variants
 - X-provided rich link cards, including `tweet_card` and unified-card payloads
 - Higher-resolution X media/card image URL normalization
+- Escaped inline media fallback when a host runtime does not expose native media constructors
 - Cached Open Graph/Twitter Card fallback previews for plain URLs
 - External link-preview requests do not include X cookies
 - Thread context action and query-ID rediscovery behavior

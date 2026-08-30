@@ -420,9 +420,9 @@ async function run() {
   const actions = readConnectorJson("actions.json");
   const apps = readConnectorJson("apps.json");
 
-  assert.strictEqual(pluginConfig.provides_attachments, true);
+  assert.strictEqual(pluginConfig.provides_attachments, false);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 11);
+  assert.strictEqual(pluginConfig.version, 12);
   const sourceModeInput = uiConfig.inputs.find(input => input.name === "source_mode");
   assert.ok(sourceModeInput.choices.includes("Following Feed"));
   assert.ok(sourceModeInput.choices.includes("Individual Accounts"));
@@ -494,7 +494,33 @@ async function run() {
   assert.match(item.annotations[0].text, /12 likes/);
   assert.match(item.annotations[0].text, /1,234 views/);
 
-  const initialState = JSON.parse(context._state.get("syncStateV11"));
+  const inlineFallback = makeContext({
+    MediaAttachment: undefined,
+    LinkAttachment: undefined
+  });
+  vm.runInContext("load()", inlineFallback);
+  await settle();
+  assert.ifError(inlineFallback.error);
+  assert.match(inlineFallback.results[0].body, /<img src="https:\/\/pbs\.twimg\.com\/media\/a\.jpg"/);
+  assert.match(inlineFallback.results[0].body, /example\.com\/article/);
+
+  const constructorIdentity = makeContext({
+    Identity: {
+      create: (name, username, avatar, uri) => ({ name, username, avatar, uri }),
+      createWithName: () => { throw new Error("createWithName should not be used when Identity.create is available"); }
+    }
+  });
+  vm.runInContext("load()", constructorIdentity);
+  await settle();
+  assert.ifError(constructorIdentity.error);
+  assert.deepStrictEqual(constructorIdentity.results[0].author, {
+    name: "OpenAI",
+    username: "@openai",
+    avatar: "https://pbs.twimg.com/profile_images/openai_normal.jpg",
+    uri: "https://x.com/openai"
+  });
+
+  const initialState = JSON.parse(context._state.get("syncStateV12"));
   assert.strictEqual(initialState.highWaterBySource["handle:openai"], "1950000000000000001");
   assert.strictEqual(initialState.highWaterBySource["handle:sama"], "1950000000000000001");
 
@@ -507,7 +533,7 @@ async function run() {
   assert.ifError(context.error);
   assert.strictEqual(context.results.length, 1);
   assert.strictEqual(context.results[0].uri, "https://x.com/openai/status/1950000000000000003");
-  const nextState = JSON.parse(context._state.get("syncStateV11"));
+  const nextState = JSON.parse(context._state.get("syncStateV12"));
   assert.strictEqual(nextState.highWaterBySource["handle:openai"], "1950000000000000003");
   assert.strictEqual(nextState.highWaterBySource["handle:sama"], "1950000000000000003");
 
@@ -613,7 +639,7 @@ async function run() {
   assert.strictEqual(homeLoadVariables.requestContext, "launch");
   assert.strictEqual(homeLoadVariables.withCommunity, true);
   assert.strictEqual(homeLoadVariables.enableRanking, false);
-  assert.deepStrictEqual(JSON.parse(following._state.get("syncStateV11")).highWaterBySource.following, "1950000000000000022");
+  assert.deepStrictEqual(JSON.parse(following._state.get("syncStateV12")).highWaterBySource.following, "1950000000000000022");
 
   const wrapped = makeContext({
     timeline: timelineBody([{ tweet: tweetResult({ id: "1950000000000000004" }) }]),
@@ -1190,6 +1216,36 @@ async function run() {
   await settle();
   assert.ifError(modernAvatar.error);
   assert.strictEqual(modernAvatar.results[0].author.avatar, "https://pbs.twimg.com/profile_images/2/modern.jpg");
+
+  const liveShapedAvatar = tweetResult({
+    id: "1950000000000000031",
+    username: "liveuser",
+    name: "Live User",
+    profile_image_url: "",
+    fullText: "Live-shaped payload"
+  });
+  liveShapedAvatar.core = {
+    user_results: {
+      result: {
+        rest_id: "liveuser-id",
+        legacy: {
+          screen_name: "liveuser",
+          name: "Live User",
+          profile_image_url_https: "https://pbs.twimg.com/profile_images/31/liveuser_normal.jpg"
+        }
+      }
+    }
+  };
+  const liveShapedContext = makeContext({
+    timeline: timelineBody([{ tweet: liveShapedAvatar }])
+  });
+  vm.runInContext("load()", liveShapedContext);
+  await settle();
+  assert.ifError(liveShapedContext.error);
+  assert.strictEqual(
+    liveShapedContext.results[0].author.avatar,
+    "https://pbs.twimg.com/profile_images/31/liveuser_normal.jpg"
+  );
 
   const quoted = makeContext({
     timeline: timelineBody([

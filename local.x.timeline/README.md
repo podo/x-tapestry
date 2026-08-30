@@ -39,6 +39,7 @@ or include them in screenshots.
 - Native post-style Tapestry items with author identity and avatar
 - Profile photos use X's current avatar field without rewriting the supplied URL
 - Optional media attachments from legacy and modern post images, videos, GIFs, and note posts
+- Escaped inline media fallback for host runtimes that do not expose native attachment constructors
 - Video/GIF attachments include explicit media type and thumbnail metadata
 - X-style URL preview cards that hide the trailing preview URL from post text
 - Link cards use X-provided `card`, `tweet_card`, and unified-card title, description, site, author, image, and aspect metadata when available
@@ -51,7 +52,7 @@ or include them in screenshots.
 - Content warnings for sensitive posts when X marks them
 - Incremental refresh by newest post ID per source, with paginated catch-up
 - Promoted home-feed entries are filtered out before they become Tapestry items
-- Connector sync state was bumped in v1.3.6 so existing feeds reload recent items with updated feed/card/avatar rendering
+- Connector sync state was bumped in v1.3.7 so existing feeds reload recent items with updated feed/card/avatar rendering
 - Configurable advanced query IDs for when X rotates web GraphQL IDs
 
 ## Reliability Notes

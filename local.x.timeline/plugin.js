@@ -12,7 +12,7 @@ const defaultTweetDetailQueryId = "97JF30KziU00483E_8elBA";
 const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
-const syncStateKey = "syncStateV11";
+const syncStateKey = "syncStateV12";
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
@@ -954,10 +954,15 @@ function userAvatarUrl(user, core, legacy) {
     || avatar.image_url_https
     || avatar.imageUrl
     || avatar.url
+    || (user && user.profile_image_url_https)
+    || (user && user.profile_image_url)
+    || (user && user.avatar_url)
     || core.profile_image_url
     || core.profile_image_url_https
+    || core.avatar_url
     || legacy.profile_image_url_https
-    || legacy.profile_image_url;
+    || legacy.profile_image_url
+    || legacy.avatar_url;
 }
 
 function expandedTweetText(fullText, legacyEntities, note, mappings) {
@@ -1697,8 +1702,47 @@ function tweetToItem(tweet) {
 
 function tweetBody(tweet) {
   const text = tweetBodyText(tweet);
-  if (!text.trim()) return "";
-  return `<p>${linkifiedText(text)}</p>`;
+  const body = text.trim() ? `<p>${linkifiedText(text)}</p>` : "";
+  if (!inlineMediaFallbackNeeded(tweet)) return body;
+
+  const media = tweet.media
+    .slice(0, 4)
+    .map(media => inlineMediaFallback(media))
+    .filter(Boolean)
+    .join("");
+  return body + media;
+}
+
+function inlineMediaFallbackNeeded(tweet) {
+  return Boolean(
+    tweet
+    && Array.isArray(tweet.media)
+    && tweet.media.length > 0
+    && !nativeMediaAvailable()
+  );
+}
+
+function nativeMediaAvailable() {
+  return typeof MediaAttachment !== "undefined"
+    && typeof MediaAttachment.createWithUrl === "function";
+}
+
+function nativeLinkAvailable() {
+  return typeof LinkAttachment !== "undefined"
+    && typeof LinkAttachment.createWithUrl === "function";
+}
+
+function inlineMediaFallback(media) {
+  if (!media || !isWebUrl(media.url)) return "";
+  const source = escapeAttribute(media.url);
+  const alt = escapeAttribute(media.altText || "Image from X");
+  if (media.type === "video" || media.type === "animated_gif") {
+    const poster = media.thumbnail && isWebUrl(media.thumbnail)
+      ? ` poster="${escapeAttribute(media.thumbnail)}"`
+      : "";
+    return `<p><video controls preload="metadata"${poster}><source src="${source}" type="${escapeAttribute(media.mimeType || "video/mp4")}"></video></p>`;
+  }
+  return `<p><img src="${source}" alt="${alt}"></p>`;
 }
 
 function tweetBodyText(tweet) {
@@ -1716,6 +1760,15 @@ function tweetIdentity(tweet) {
 }
 
 function createIdentity(name, username, avatar, uri) {
+  if (typeof Identity !== "undefined" && typeof Identity.create === "function") {
+    try {
+      return Identity.create(name, username || null, avatar || null, uri || null);
+    }
+    catch (error) {
+      // Fall back to the property-based API used by older Loom runtimes.
+    }
+  }
+
   const identity = Identity.createWithName(name);
   if (username) identity.username = username;
   if (avatar) identity.avatar = avatar;
@@ -1771,7 +1824,7 @@ function tweetAttachments(tweet) {
 
 function tweetMediaAttachments(tweet) {
   const attachments = [];
-  if (!showMedia() || typeof MediaAttachment === "undefined" || !tweet.media || tweet.media.length === 0) {
+  if (!showMedia() || !nativeMediaAvailable() || !tweet.media || tweet.media.length === 0) {
     return attachments;
   }
 
@@ -1825,7 +1878,7 @@ function tweetLinkAttachment(tweet) {
 }
 
 function linkCardForTweet(tweet) {
-  if (!showLinkCards() || typeof LinkAttachment === "undefined" || !tweet) return null;
+  if (!showLinkCards() || !nativeLinkAvailable() || !tweet) return null;
   if (hasRenderableMedia(tweet) || hasRenderablePoll(tweet)) return null;
 
   const card = tweet.card || {};
@@ -2028,7 +2081,7 @@ function linkPreviewCacheUrl(url) {
 function hasRenderableMedia(tweet) {
   return Boolean(
     showMedia()
-    && typeof MediaAttachment !== "undefined"
+    && nativeMediaAvailable()
     && tweet
     && tweet.media
     && tweet.media.length > 0
