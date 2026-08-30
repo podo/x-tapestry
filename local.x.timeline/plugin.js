@@ -12,7 +12,7 @@ const defaultTweetDetailQueryId = "97JF30KziU00483E_8elBA";
 const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
-const syncStateKey = "syncStateV6";
+const syncStateKey = "syncStateV7";
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
@@ -873,6 +873,7 @@ function normalizeTweet(rawResult, includeQuoted) {
     quotes: finiteNumber(legacy.quote_count),
     views: finiteNumber(result.views && result.views.count),
     media,
+    hiddenUrls: mediaHiddenUrls(media),
     externalUrls,
     card,
     poll,
@@ -978,19 +979,14 @@ function extractExternalUrls(mappings) {
 
 function extractMedia(result, legacy) {
   const media = [];
-  const extended = legacy && legacy.extended_entities && Array.isArray(legacy.extended_entities.media)
-    ? legacy.extended_entities.media
-    : null;
-  const direct = legacy && legacy.entities && Array.isArray(legacy.entities.media)
-    ? legacy.entities.media
-    : null;
+  const extended = mediaEntityEntries(legacy && legacy.extended_entities && legacy.extended_entities.media);
+  const direct = mediaEntityEntries(legacy && legacy.entities && legacy.entities.media);
   const note = result && result.note_tweet
     && result.note_tweet.note_tweet_results
     && result.note_tweet.note_tweet_results.result;
-  const noteMedia = note && note.entity_set && Array.isArray(note.entity_set.media)
-    ? note.entity_set.media
-    : [];
-  const entries = (extended || direct || []).concat(noteMedia);
+  const noteMedia = mediaEntityEntries(note && note.entity_set && note.entity_set.media);
+  const modern = mediaEntityEntries(result && result.media_entities);
+  const entries = extended.concat(direct, noteMedia, modern);
 
   for (const entry of entries) {
     const item = mediaFromEntity(entry);
@@ -1000,8 +996,20 @@ function extractMedia(result, legacy) {
   return dedupeBy(media, item => item.url);
 }
 
+function mediaEntityEntries(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (typeof value === "object") {
+    return Object.keys(value).map(key => value[key]).filter(Boolean);
+  }
+  return [];
+}
+
 function mediaFromEntity(entry) {
   if (!entry || typeof entry !== "object") return null;
+  const modern = mediaFromModernEntity(entry);
+  if (modern) return modern;
+
   let url = null;
   let type = entry.type || "photo";
   let thumbnail = null;
@@ -1028,8 +1036,97 @@ function mediaFromEntity(entry) {
     mimeType: mediaMimeType(type, url),
     width: dimensions.width,
     height: dimensions.height,
-    altText: entry.ext_alt_text || entry.alt_text || null
+    altText: entry.ext_alt_text || entry.alt_text || null,
+    hiddenUrls: mediaEntityHiddenUrls(entry)
   };
+}
+
+function mediaFromModernEntity(entry) {
+  const info = modernMediaInfo(entry);
+  if (!info) return null;
+
+  const typeName = String(info.__typename || info.type || "").toLowerCase();
+  const isImage = typeName.indexOf("image") >= 0;
+  const isVideo = typeName.indexOf("video") >= 0;
+  const isGif = typeName.indexOf("gif") >= 0;
+  const type = isVideo ? "video" : isGif ? "animated_gif" : "photo";
+  let url = null;
+  let thumbnail = null;
+
+  if (isImage || (!isVideo && !isGif)) {
+    url = normalizedPhotoUrl(
+      info.original_img_url
+      || info.original_image_url
+      || info.image_url
+      || info.url
+      || (info.preview_image && (info.preview_image.original_img_url || info.preview_image.url))
+    );
+  }
+  else {
+    thumbnail = normalizedPhotoUrl(info.preview_image && (info.preview_image.original_img_url || info.preview_image.url));
+    const variants = Array.isArray(info.variants) ? info.variants : [];
+    const mp4s = variants
+      .filter(variant => variant && variant.url && /video\/mp4/i.test(variant.content_type || variant.type || ""))
+      .sort((left, right) => finiteNumber(right.bit_rate || right.bitrate) - finiteNumber(left.bit_rate || left.bitrate));
+    if (mp4s.length > 0) url = mp4s[0].url;
+  }
+
+  if (!isWebUrl(url)) return null;
+
+  const dimensions = modernMediaDimensions(info);
+  return {
+    url,
+    type,
+    thumbnail,
+    mimeType: mediaMimeType(type, url),
+    width: dimensions.width,
+    height: dimensions.height,
+    altText: info.alt_text || info.ext_alt_text || entry.ext_alt_text || entry.alt_text || null,
+    hiddenUrls: mediaEntityHiddenUrls(entry)
+  };
+}
+
+function modernMediaInfo(entry) {
+  const result = entry
+    && entry.media_results
+    && entry.media_results.result;
+  return (result && result.media_info)
+    || (entry && entry.media_info)
+    || null;
+}
+
+function modernMediaDimensions(info) {
+  let width = finiteNumber(info && (info.original_img_width || info.original_width || info.width));
+  let height = finiteNumber(info && (info.original_img_height || info.original_height || info.height));
+
+  const preview = info && info.preview_image ? info.preview_image : {};
+  if (!width || !height) {
+    width = finiteNumber(preview.original_img_width || preview.width);
+    height = finiteNumber(preview.original_img_height || preview.height);
+  }
+
+  if ((!width || !height) && info && Array.isArray(info.aspect_ratio)) {
+    width = finiteNumber(info.aspect_ratio[0]);
+    height = finiteNumber(info.aspect_ratio[1]);
+  }
+
+  return { width, height };
+}
+
+function mediaEntityHiddenUrls(entry) {
+  return dedupeStrings([
+    entry && entry.url,
+    entry && entry.expanded_url,
+    entry && entry.display_url
+  ].filter(Boolean).map(String));
+}
+
+function mediaHiddenUrls(media) {
+  const urls = [];
+  for (const item of media || []) {
+    if (Array.isArray(item.hiddenUrls)) urls.push(...item.hiddenUrls);
+  }
+  return dedupeStrings(urls);
 }
 
 function mediaDimensions(entry) {
@@ -1077,7 +1174,10 @@ function normalizedPhotoUrl(value) {
 
   try {
     const url = new URL(value);
-    if (/pbs\.twimg\.com$/i.test(url.hostname) && url.pathname.indexOf("/media/") >= 0) {
+    if (/pbs\.twimg\.com$/i.test(url.hostname) && (
+      url.pathname.indexOf("/media/") >= 0
+      || url.pathname.indexOf("/card_img/") >= 0
+    )) {
       if (url.searchParams.has("name")) {
         url.searchParams.set("name", "large");
       }
@@ -1094,6 +1194,9 @@ function normalizedPhotoUrl(value) {
 function extractCard(result, externalUrls, mappings) {
   const values = cardBindingValues(result);
   if (Object.keys(values).length === 0) return null;
+
+  const unified = unifiedCard(values, externalUrls, mappings);
+  if (unified) return unified;
 
   const url = firstExternalCardUrl(values, mappings) || firstExternalUrl(externalUrls);
   if (!isExternalWebUrl(url)) return null;
@@ -1145,10 +1248,26 @@ function extractCard(result, externalUrls, mappings) {
 
 function cardBindingValues(result) {
   const values = {};
-  const bindings = result
-    && result.card
-    && result.card.legacy
-    && result.card.legacy.binding_values;
+  const containers = cardContainers(result);
+
+  for (const container of containers) {
+    mergeCardBindingValues(values, container);
+  }
+
+  return values;
+}
+
+function cardContainers(result) {
+  return [
+    result && result.card,
+    result && result.tweet_card,
+    result && result.legacy && result.legacy.tweet_card
+  ].filter(Boolean);
+}
+
+function mergeCardBindingValues(values, container) {
+  const bindings = (container && container.legacy && container.legacy.binding_values)
+    || (container && container.binding_values);
 
   if (Array.isArray(bindings)) {
     for (const binding of bindings) {
@@ -1160,8 +1279,6 @@ function cardBindingValues(result) {
       values[key] = bindings[key];
     }
   }
-
-  return values;
 }
 
 function firstExternalCardUrl(values, mappings) {
@@ -1221,9 +1338,133 @@ function cardHiddenUrls(url, externalUrls, values, mappings) {
     if (equivalentWebUrl(candidate, url)) urls.push(candidate);
   }
   const cardUrl = cardString(values.card_url);
+  if (cardUrl) urls.push(cardUrl);
   const expanded = expandedUrlForSource(cardUrl, mappings);
   if (expanded && equivalentWebUrl(expanded, url)) urls.push(expanded);
   return dedupeStrings(urls);
+}
+
+function unifiedCard(values, externalUrls, mappings) {
+  const raw = cardString(values.unified_card);
+  if (!raw) return null;
+
+  let json;
+  try {
+    json = JSON.parse(raw);
+  }
+  catch (error) {
+    return null;
+  }
+
+  const url = unifiedCardUrl(json, mappings)
+    || firstExternalCardUrl(values, mappings)
+    || firstExternalUrl(externalUrls);
+  if (!isExternalWebUrl(url)) return null;
+
+  const details = unifiedCardDetails(json);
+  const image = unifiedCardImage(json);
+  return {
+    url,
+    type: unifiedCardType(json),
+    title: details.title,
+    subtitle: details.subtitle,
+    siteName: details.siteName,
+    authorName: details.authorName,
+    image: image ? image.url : null,
+    aspectSize: image && image.width > 0 && image.height > 0
+      ? { width: image.width, height: image.height }
+      : null,
+    hiddenUrls: cardHiddenUrls(url, externalUrls, values, mappings)
+  };
+}
+
+function unifiedCardUrl(json, mappings) {
+  const candidates = [];
+  const destinations = json && json.destination_objects ? Object.keys(json.destination_objects) : [];
+  for (const key of destinations) {
+    const data = json.destination_objects[key] && json.destination_objects[key].data || {};
+    candidates.push(
+      data.url,
+      data.destination_url,
+      data.url_data && data.url_data.url,
+      data.url_data && data.url_data.expanded_url,
+      data.display_url
+    );
+  }
+
+  const components = json && json.component_objects ? Object.keys(json.component_objects) : [];
+  for (const key of components) {
+    const data = json.component_objects[key] && json.component_objects[key].data || {};
+    candidates.push(
+      data.url,
+      data.destination_url,
+      data.destination,
+      data.url_data && data.url_data.url,
+      data.url_data && data.url_data.expanded_url
+    );
+  }
+
+  for (const candidate of candidates) {
+    const value = unifiedText(candidate);
+    const expanded = expandedUrlForSource(value, mappings);
+    if (isExternalWebUrl(expanded)) return expanded;
+    if (isExternalWebUrl(value)) return value;
+  }
+  return null;
+}
+
+function unifiedCardDetails(json) {
+  const components = json && json.component_objects ? Object.keys(json.component_objects) : [];
+  for (const key of components) {
+    const data = json.component_objects[key] && json.component_objects[key].data || {};
+    const title = normalizedCardText(unifiedText(data.title || data.headline || data.label));
+    const subtitle = normalizedCardText(unifiedText(data.subtitle || data.description));
+    const siteName = normalizedCardText(unifiedText(data.vanity_url || data.site_name || data.domain));
+    const authorName = stripLeadingAt(normalizedCardText(unifiedText(data.author || data.author_name || data.creator)));
+    if (title || subtitle || siteName || authorName) {
+      return { title, subtitle, siteName, authorName };
+    }
+  }
+  return { title: "", subtitle: "", siteName: "", authorName: "" };
+}
+
+function unifiedCardImage(json) {
+  const media = mediaEntityEntries(json && json.media_entities);
+  for (const entry of media) {
+    const info = modernMediaInfo(entry);
+    if (!info) continue;
+    const typeName = String(info.__typename || info.type || "").toLowerCase();
+    const imageUrl = typeName.indexOf("video") >= 0 || typeName.indexOf("gif") >= 0
+      ? info.preview_image && (info.preview_image.original_img_url || info.preview_image.url)
+      : info.original_img_url || info.original_image_url || info.image_url || info.url;
+    const url = normalizedPhotoUrl(imageUrl);
+    if (!isWebUrl(url)) continue;
+    const dimensions = modernMediaDimensions(info);
+    return {
+      url,
+      width: dimensions.width,
+      height: dimensions.height
+    };
+  }
+  return null;
+}
+
+function unifiedCardType(json) {
+  const raw = String(json && (json.type || json.card_type || json.name) || "").toLowerCase();
+  if (/player|video|broadcast/.test(raw)) return "video.other";
+  if (/audio|space/.test(raw)) return "audio.other";
+  return "website";
+}
+
+function unifiedText(value) {
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (!value || typeof value !== "object") return "";
+  return value.content
+    || value.text
+    || value.string_value
+    || value.url
+    || value.id
+    || "";
 }
 
 function firstCardImage(values) {
@@ -1367,7 +1608,9 @@ function tweetBody(tweet) {
 function tweetBodyText(tweet) {
   const card = linkCardForTweet(tweet);
   const text = tweet && tweet.text ? tweet.text : "";
-  return card ? textWithoutCardUrl(text, card.hiddenUrls || [card.url]) : text;
+  if (card) return textWithoutCardUrl(text, card.hiddenUrls || [card.url]);
+  if (hasRenderableMedia(tweet)) return textWithoutCardUrl(text, tweet.hiddenUrls || mediaHiddenUrls(tweet.media));
+  return text;
 }
 
 function tweetIdentity(tweet) {

@@ -99,7 +99,9 @@ function tweetResult(overrides = {}) {
     },
     views: { count: overrides.views ?? "1234" },
     quoted_status_result: overrides.quoted_status_result,
-    card: overrides.card
+    card: overrides.card,
+    tweet_card: overrides.tweet_card,
+    media_entities: overrides.media_entities
   };
 }
 
@@ -117,6 +119,51 @@ function stringValue(value) {
 
 function imageValue(url, width, height) {
   return { image_value: { url, width, height } };
+}
+
+function modernImageEntity(url, sourceUrl = "https://t.co/img") {
+  return {
+    media_key: "3_1",
+    url: sourceUrl,
+    expanded_url: "https://x.com/openai/status/1950000000000000025/photo/1",
+    media_results: {
+      result: {
+        media_info: {
+          __typename: "ApiImage",
+          original_img_url: url,
+          original_img_width: 1200,
+          original_img_height: 800,
+          alt_text: "Modern image alt text"
+        }
+      }
+    }
+  };
+}
+
+function modernVideoEntity(videoUrl, thumbnailUrl, sourceUrl = "https://t.co/vid") {
+  return {
+    media_key: "7_1",
+    url: sourceUrl,
+    expanded_url: "https://x.com/openai/status/1950000000000000026/video/1",
+    media_results: {
+      result: {
+        media_availability_v2: { status: "Available" },
+        media_info: {
+          __typename: "ApiVideo",
+          preview_image: {
+            original_img_url: thumbnailUrl,
+            original_img_width: 1280,
+            original_img_height: 720
+          },
+          variants: [
+            { content_type: "application/x-mpegURL", url: "https://video.twimg.com/amplify_video/1/pl/hls.m3u8" },
+            { content_type: "video/mp4", bit_rate: 832000, url: "https://video.twimg.com/amplify_video/1/vid/avc1/640x360/low.mp4" },
+            { content_type: "video/mp4", bit_rate: 2176000, url: videoUrl }
+          ]
+        }
+      }
+    }
+  };
 }
 
 function urlEntity(url, expandedUrl, displayUrl = null) {
@@ -377,7 +424,7 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 6);
+  assert.strictEqual(pluginConfig.version, 7);
   const sourceModeInput = uiConfig.inputs.find(input => input.name === "source_mode");
   assert.ok(sourceModeInput.choices.includes("Following Feed"));
   assert.ok(sourceModeInput.choices.includes("Individual Accounts"));
@@ -449,7 +496,7 @@ async function run() {
   assert.match(item.annotations[0].text, /12 likes/);
   assert.match(item.annotations[0].text, /1,234 views/);
 
-  const initialState = JSON.parse(context._state.get("syncStateV6"));
+  const initialState = JSON.parse(context._state.get("syncStateV7"));
   assert.strictEqual(initialState.highWaterBySource["handle:openai"], "1950000000000000001");
   assert.strictEqual(initialState.highWaterBySource["handle:sama"], "1950000000000000001");
 
@@ -462,7 +509,7 @@ async function run() {
   assert.ifError(context.error);
   assert.strictEqual(context.results.length, 1);
   assert.strictEqual(context.results[0].uri, "https://x.com/openai/status/1950000000000000003");
-  const nextState = JSON.parse(context._state.get("syncStateV6"));
+  const nextState = JSON.parse(context._state.get("syncStateV7"));
   assert.strictEqual(nextState.highWaterBySource["handle:openai"], "1950000000000000003");
   assert.strictEqual(nextState.highWaterBySource["handle:sama"], "1950000000000000003");
 
@@ -567,7 +614,7 @@ async function run() {
   assert.strictEqual(homeLoadVariables.requestContext, "launch");
   assert.strictEqual(homeLoadVariables.withCommunity, true);
   assert.strictEqual(homeLoadVariables.enableRanking, false);
-  assert.deepStrictEqual(JSON.parse(following._state.get("syncStateV6")).highWaterBySource.following, "1950000000000000022");
+  assert.deepStrictEqual(JSON.parse(following._state.get("syncStateV7")).highWaterBySource.following, "1950000000000000022");
 
   const wrapped = makeContext({
     timeline: timelineBody([{ tweet: tweetResult({ id: "1950000000000000004" }) }]),
@@ -613,9 +660,99 @@ async function run() {
   assert.strictEqual(linkCard.results[0].attachments[0].subtitle, "Card summary");
   assert.strictEqual(linkCard.results[0].attachments[0].siteName, "example.com");
   assert.strictEqual(linkCard.results[0].attachments[0].authorName, "Example Author");
-  assert.strictEqual(linkCard.results[0].attachments[0].image, "https://pbs.twimg.com/card_img/abc?format=jpg&name=small");
+  assert.strictEqual(linkCard.results[0].attachments[0].image, "https://pbs.twimg.com/card_img/abc?format=jpg&name=large");
   assert.strictEqual(linkCard.results[0].attachments[0].aspectSize.width, 640);
   assert.strictEqual(linkCard.results[0].body, "<p>Read this</p>");
+
+  const tweetCard = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000028",
+        fullText: "Read tweet card https://t.co/tweetcard",
+        legacy: {
+          entities: {
+            urls: [
+              urlEntity("https://t.co/tweetcard", "https://example.com/tweet-card", "example.com/tweet-card")
+            ]
+          },
+          extended_entities: { media: [] }
+        },
+        card: null,
+        tweet_card: card({
+          card_url: stringValue("https://t.co/tweetcard"),
+          title: stringValue("Tweet card title"),
+          description: stringValue("Tweet card summary"),
+          site_name: stringValue("Tweet Cards"),
+          thumbnail_image_original: imageValue("https://pbs.twimg.com/card_img/tweet-card?format=jpg&name=small", 1200, 630)
+        })
+      })
+    ])
+  });
+  vm.runInContext("load()", tweetCard);
+  await settle();
+  assert.ifError(tweetCard.error);
+  assert.strictEqual(tweetCard.results[0].attachments[0].url, "https://example.com/tweet-card");
+  assert.strictEqual(tweetCard.results[0].attachments[0].title, "Tweet card title");
+  assert.strictEqual(tweetCard.results[0].attachments[0].subtitle, "Tweet card summary");
+  assert.strictEqual(tweetCard.results[0].attachments[0].siteName, "Tweet Cards");
+  assert.strictEqual(tweetCard.results[0].attachments[0].image, "https://pbs.twimg.com/card_img/tweet-card?format=jpg&name=large");
+  assert.strictEqual(tweetCard.results[0].body, "<p>Read tweet card</p>");
+
+  const unifiedCardJson = {
+    type: "image_website",
+    destination_objects: {
+      browser_1: {
+        data: {
+          url_data: { url: "https://example.com/unified" },
+          display_url: "example.com/unified"
+        }
+      }
+    },
+    component_objects: {
+      details_1: {
+        data: {
+          destination: "browser_1",
+          title: { content: "Unified title" },
+          subtitle: { content: "Unified summary" },
+          vanity_url: { content: "Example Unified" }
+        }
+      },
+      media_1: {
+        data: { id: "media_1" }
+      }
+    },
+    media_entities: {
+      media_1: modernImageEntity("https://pbs.twimg.com/card_img/unified?format=jpg&name=small")
+    }
+  };
+  const unifiedCard = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000029",
+        fullText: "Unified https://t.co/unified",
+        legacy: {
+          entities: {
+            urls: []
+          },
+          extended_entities: { media: [] }
+        },
+        card: card({
+          card_url: stringValue("https://t.co/unified"),
+          unified_card: stringValue(JSON.stringify(unifiedCardJson))
+        })
+      })
+    ])
+  });
+  vm.runInContext("load()", unifiedCard);
+  await settle();
+  assert.ifError(unifiedCard.error);
+  assert.strictEqual(unifiedCard.results[0].attachments[0].url, "https://example.com/unified");
+  assert.strictEqual(unifiedCard.results[0].attachments[0].title, "Unified title");
+  assert.strictEqual(unifiedCard.results[0].attachments[0].subtitle, "Unified summary");
+  assert.strictEqual(unifiedCard.results[0].attachments[0].siteName, "Example Unified");
+  assert.strictEqual(unifiedCard.results[0].attachments[0].image, "https://pbs.twimg.com/card_img/unified?format=jpg&name=large");
+  assert.strictEqual(unifiedCard.results[0].attachments[0].aspectSize.width, 1200);
+  assert.strictEqual(unifiedCard.results[0].body, "<p>Unified</p>");
 
   const multiLinkCard = makeContext({
     timeline: timelineBody([
@@ -793,6 +930,81 @@ async function run() {
   assert.strictEqual(video.results[0].attachments[0].thumbnail, "https://pbs.twimg.com/ext_tw_video_thumb/a.jpg");
   assert.strictEqual(video.results[0].attachments[0].aspectSize.width, 16);
   assert.strictEqual(video.results[0].attachments[0].aspectSize.height, 9);
+
+  const legacyMediaPlaceholder = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000025",
+        fullText: "Legacy photo https://t.co/photo",
+        legacy: {
+          entities: {
+            urls: [],
+            media: [
+              {
+                type: "photo",
+                url: "https://t.co/photo",
+                media_url_https: "https://pbs.twimg.com/media/legacy?format=jpg&name=small",
+                original_info: { width: 640, height: 480 },
+                ext_alt_text: "Legacy photo"
+              }
+            ]
+          },
+          extended_entities: { media: [] }
+        }
+      })
+    ])
+  });
+  vm.runInContext("load()", legacyMediaPlaceholder);
+  await settle();
+  assert.ifError(legacyMediaPlaceholder.error);
+  assert.strictEqual(legacyMediaPlaceholder.results[0].attachments[0].url, "https://pbs.twimg.com/media/legacy?format=jpg&name=large");
+  assert.strictEqual(legacyMediaPlaceholder.results[0].attachments[0].text, "Legacy photo");
+  assert.strictEqual(legacyMediaPlaceholder.results[0].body, "<p>Legacy photo</p>");
+
+  const modernImage = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000026",
+        fullText: "Modern image https://t.co/img",
+        legacy: { entities: { urls: [] }, extended_entities: { media: [] } },
+        media_entities: {
+          "3_1": modernImageEntity("https://pbs.twimg.com/media/modern?format=jpg&name=small", "https://t.co/img")
+        }
+      })
+    ])
+  });
+  vm.runInContext("load()", modernImage);
+  await settle();
+  assert.ifError(modernImage.error);
+  assert.strictEqual(modernImage.results[0].attachments[0].url, "https://pbs.twimg.com/media/modern?format=jpg&name=large");
+  assert.strictEqual(modernImage.results[0].attachments[0].mimeType, "image/jpeg");
+  assert.strictEqual(modernImage.results[0].attachments[0].text, "Modern image alt text");
+  assert.strictEqual(modernImage.results[0].attachments[0].aspectSize.width, 1200);
+  assert.strictEqual(modernImage.results[0].body, "<p>Modern image</p>");
+
+  const modernVideo = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000027",
+        fullText: "Modern video https://t.co/vid",
+        legacy: { entities: { urls: [] }, extended_entities: { media: [] } },
+        media_entities: [
+          modernVideoEntity(
+            "https://video.twimg.com/amplify_video/1/vid/avc1/1280x720/high.mp4",
+            "https://pbs.twimg.com/amplify_video_thumb/1/img/thumb.jpg",
+            "https://t.co/vid"
+          )
+        ]
+      })
+    ])
+  });
+  vm.runInContext("load()", modernVideo);
+  await settle();
+  assert.ifError(modernVideo.error);
+  assert.strictEqual(modernVideo.results[0].attachments[0].url, "https://video.twimg.com/amplify_video/1/vid/avc1/1280x720/high.mp4");
+  assert.strictEqual(modernVideo.results[0].attachments[0].thumbnail, "https://pbs.twimg.com/amplify_video_thumb/1/img/thumb.jpg");
+  assert.strictEqual(modernVideo.results[0].attachments[0].mimeType, "video/mp4");
+  assert.strictEqual(modernVideo.results[0].body, "<p>Modern video</p>");
 
   const queryAvatar = makeContext({
     timeline: timelineBody([
