@@ -22,14 +22,14 @@
       "name": "source_mode",
       "type": "choices",
       "prompt": "Source Mode",
-      "choices": "Handles,Search Query",
-      "value": "Handles"
+      "choices": "Following Feed,Individual Accounts,Search Query",
+      "value": "Following Feed"
     },
     {
       "name": "x_sources",
       "type": "text",
       "prompt": "Handles / Search Query",
-      "placeholder": "openai, sama"
+      "placeholder": "Only needed for Individual Accounts or Search Query"
     },
     {
       "name": "query_suffix",
@@ -92,6 +92,13 @@
       "type": "switch",
       "prompt": "Advanced: Transaction Header",
       "value": "on"
+    },
+    {
+      "name": "home_latest_timeline_query_id",
+      "type": "text",
+      "prompt": "Advanced: Following Feed ID",
+      "placeholder": "Leave blank for bundled value",
+      "value": "BKB7oi212Fi7kQtCBGE4zA"
     },
     {
       "name": "search_query_id",

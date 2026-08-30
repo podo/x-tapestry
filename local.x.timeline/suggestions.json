@@ -1,6 +1,11 @@
 {
   "variables": [
     {
+      "name": "source_mode",
+      "value": "Following Feed",
+      "title": "Following Feed"
+    },
+    {
       "name": "x_sources",
       "value": "openai",
       "title": "OpenAI"
@@ -17,7 +22,7 @@
         "x_sources"
       ],
       "values": [
-        "Handles",
+        "Individual Accounts",
         "openai, sama"
       ]
     },

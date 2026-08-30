@@ -167,12 +167,37 @@ function userTimelineBody(results, cursor = null) {
   };
 }
 
+function homeTimelineBody(results, cursor = null, extraEntries = []) {
+  const search = timelineBody(results, cursor);
+  const timeline = search.data.search_by_raw_query.search_timeline.timeline;
+  if (extraEntries.length > 0) timeline.instructions[0].entries.push(...extraEntries);
+  return {
+    data: {
+      home: {
+        home_timeline_urt: timeline
+      }
+    }
+  };
+}
+
 function tweetDetailBody(results, cursor = null) {
   const search = timelineBody(results, cursor);
   return {
     data: {
       threaded_conversation_with_injections_v2: {
         instructions: search.data.search_by_raw_query.search_timeline.timeline.instructions
+      }
+    }
+  };
+}
+
+function promotedTweetEntry(result) {
+  return {
+    entryId: `promoted-tweet-${result.rest_id || result.tweet?.rest_id}`,
+    content: {
+      itemContent: {
+        tweet_results: { result },
+        promotedMetadata: { advertiserResults: {} }
       }
     }
   };
@@ -207,6 +232,13 @@ function graphqlAction(url) {
   return match ? match[1] : null;
 }
 
+function graphqlVariables(call) {
+  if (call.parameters) {
+    return JSON.parse(call.parameters).variables;
+  }
+  return JSON.parse(new URL(call.url).searchParams.get("variables"));
+}
+
 function makeContext(overrides = {}) {
   const state = new Map();
   const calls = [];
@@ -225,7 +257,7 @@ function makeContext(overrides = {}) {
     auth_token: "auth-token",
     ct0: "csrf-token",
     cookie_header: "",
-    source_mode: "Handles",
+    source_mode: "Individual Accounts",
     x_sources: "openai, sama",
     query_suffix: "lang:en",
     search_product: "Latest",
@@ -244,6 +276,7 @@ function makeContext(overrides = {}) {
     bearer_token: "",
     timeline: timelineBody([tweetResult()]),
     userTimeline: null,
+    homeTimeline: null,
     threadTimeline: null,
     linkPreviews: {},
     accountSettings: { screen_name: "podo", name: "Podo" },
@@ -258,10 +291,11 @@ function makeContext(overrides = {}) {
       }
       const action = graphqlAction(url);
       if (action === "UserByScreenName") {
-        const variables = JSON.parse(new URL(url).searchParams.get("variables"));
+        const variables = graphqlVariables({ url, parameters });
         return JSON.stringify(userProfileBody(variables.screen_name));
       }
       if (action === "UserTweets") return JSON.stringify(context.userTimeline || context.timeline);
+      if (action === "HomeLatestTimeline") return JSON.stringify(context.homeTimeline || homeTimelineBody([tweetResult()]));
       if (action === "TweetDetail") return JSON.stringify(context.threadTimeline || tweetDetailBody([tweetResult()]));
       if (action === "SearchTimeline") return JSON.stringify(context.timeline);
       return JSON.stringify(context.timeline);
@@ -343,15 +377,21 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 4);
+  assert.strictEqual(pluginConfig.version, 5);
+  const sourceModeInput = uiConfig.inputs.find(input => input.name === "source_mode");
+  assert.ok(sourceModeInput.choices.includes("Following Feed"));
+  assert.ok(sourceModeInput.choices.includes("Individual Accounts"));
+  assert.ok(sourceModeInput.choices.includes("Search Query"));
   assert.ok(uiConfig.inputs.some(input => input.name === "x_sources"));
   assert.ok(uiConfig.inputs.some(input => input.name === "fetch_link_previews"));
+  assert.ok(uiConfig.inputs.some(input => input.name === "home_latest_timeline_query_id"));
   assert.ok(uiConfig.inputs.some(input => input.name === "user_by_screen_name_query_id"));
   assert.ok(uiConfig.inputs.some(input => input.name === "user_tweets_query_id"));
   assert.ok(uiConfig.inputs.some(input => input.name === "tweet_detail_query_id"));
   assert.ok(discovery.sites.includes("x.com"));
   assert.ok(discovery.sites.includes("twitter.com"));
   assert.ok(discovery.input.some(input => input.url === "https://x.com/$1"));
+  assert.ok(suggestions.variables.some(variable => variable.title === "Following Feed"));
   assert.ok(suggestions.variables.some(variable => variable.title === "OpenAI + Sam"));
   assert.ok(actions.items.some(action => action.id === "thread" && action.role === "context"));
   assert.ok(apps.apps.some(app => app.name === "X" && app.template === "__URL__"));
@@ -409,7 +449,7 @@ async function run() {
   assert.match(item.annotations[0].text, /12 likes/);
   assert.match(item.annotations[0].text, /1,234 views/);
 
-  const initialState = JSON.parse(context._state.get("syncStateV4"));
+  const initialState = JSON.parse(context._state.get("syncStateV5"));
   assert.strictEqual(initialState.highWaterBySource["handle:openai"], "1950000000000000001");
   assert.strictEqual(initialState.highWaterBySource["handle:sama"], "1950000000000000001");
 
@@ -422,7 +462,7 @@ async function run() {
   assert.ifError(context.error);
   assert.strictEqual(context.results.length, 1);
   assert.strictEqual(context.results[0].uri, "https://x.com/openai/status/1950000000000000003");
-  const nextState = JSON.parse(context._state.get("syncStateV4"));
+  const nextState = JSON.parse(context._state.get("syncStateV5"));
   assert.strictEqual(nextState.highWaterBySource["handle:openai"], "1950000000000000003");
   assert.strictEqual(nextState.highWaterBySource["handle:sama"], "1950000000000000003");
 
@@ -442,6 +482,81 @@ async function run() {
   assert.strictEqual(rawVariables.rawQuery, "from:openai build");
   assert.strictEqual(rawVariables.product, "Latest");
   assert.ok(!rawSearchApi.headers["x-client-transaction-id"]);
+
+  const promotedTweet = tweetResult({
+    id: "1950000000000000023",
+    username: "sponsor",
+    name: "Sponsor",
+    fullText: "Promoted post",
+    legacy: { entities: { urls: [] }, extended_entities: { media: [] } }
+  });
+  const following = makeContext({
+    source_mode: "Following Feed",
+    x_sources: "",
+    homeTimeline: homeTimelineBody([
+      tweetResult({
+        id: "1950000000000000022",
+        username: "verge",
+        name: "The Verge",
+        profile_image_url: "",
+        avatar: { image_url: "https://pbs.twimg.com/profile_images/7/verge_normal.jpg" },
+        fullText: "Read https://t.co/home",
+        legacy: {
+          entities: {
+            urls: [
+              urlEntity("https://t.co/home", "https://example.com/home", "example.com/home")
+            ]
+          },
+          extended_entities: { media: [] }
+        }
+      })
+    ], "|home-next|", [promotedTweetEntry(promotedTweet)]),
+    linkPreviews: {
+      "https://example.com/home": `
+        <html>
+          <head>
+            <meta property="og:title" content="Home feed story">
+            <meta property="og:description" content="Rendered from webpage metadata">
+            <meta property="og:site_name" content="Example News">
+            <meta property="og:image" content="https://example.com/home.jpg">
+            <meta property="og:image:width" content="1200">
+            <meta property="og:image:height" content="675">
+          </head>
+        </html>
+      `
+    }
+  });
+  vm.runInContext("verify()", following);
+  await settle();
+  assert.ifError(following.error);
+  assert.strictEqual(following.verification.displayName, "X - Following Feed");
+  assert.strictEqual(following.verification.icon, "https://pbs.twimg.com/profile_images/7/verge.jpg");
+  const homeVerifyApi = apiCall(following, "HomeLatestTimeline");
+  assert.ok(homeVerifyApi, "verify should call HomeLatestTimeline");
+  assert.strictEqual(homeVerifyApi.method, "POST");
+  assert.strictEqual(homeVerifyApi.headers["Content-Type"], "application/json");
+  const homeVerifyVariables = graphqlVariables(homeVerifyApi);
+  assert.strictEqual(homeVerifyVariables.count, 1);
+  assert.deepStrictEqual(homeVerifyVariables.seenTweetIds, []);
+
+  vm.runInContext("load()", following);
+  await settle();
+  assert.ifError(following.error);
+  assert.strictEqual(following.results.length, 1);
+  assert.strictEqual(following.results[0].author.username, "@verge");
+  assert.strictEqual(following.results[0].author.avatar, "https://pbs.twimg.com/profile_images/7/verge.jpg");
+  assert.strictEqual(following.results[0].attachments[0].kind, "link");
+  assert.strictEqual(following.results[0].attachments[0].title, "Home feed story");
+  assert.strictEqual(following.results[0].attachments[0].subtitle, "Rendered from webpage metadata");
+  assert.strictEqual(following.results[0].attachments[0].siteName, "Example News");
+  assert.strictEqual(following.results[0].attachments[0].image, "https://example.com/home.jpg");
+  assert.strictEqual(following.results[0].attachments[0].aspectSize.width, 1200);
+  assert.strictEqual(following.results[0].attachments[0].aspectSize.height, 675);
+  assert.strictEqual(following.results[0].body, "<p>Read</p>");
+  const homeLoadApi = apiCalls(following, "HomeLatestTimeline").pop();
+  const homeLoadVariables = graphqlVariables(homeLoadApi);
+  assert.strictEqual(homeLoadVariables.count, 20);
+  assert.deepStrictEqual(JSON.parse(following._state.get("syncStateV5")).highWaterBySource.following, "1950000000000000022");
 
   const wrapped = makeContext({
     timeline: timelineBody([{ tweet: tweetResult({ id: "1950000000000000004" }) }]),
@@ -680,6 +795,19 @@ async function run() {
   await settle();
   assert.ifError(queryAvatar.error);
   assert.strictEqual(queryAvatar.results[0].author.avatar, "https://pbs.twimg.com/profile_images/1/avatar.jpg");
+
+  const queryAvatarWithoutExtension = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000024",
+        profile_image_url: "https://pbs.twimg.com/profile_images/1/avatar?format=jpg&name=normal"
+      })
+    ])
+  });
+  vm.runInContext("load()", queryAvatarWithoutExtension);
+  await settle();
+  assert.ifError(queryAvatarWithoutExtension.error);
+  assert.strictEqual(queryAvatarWithoutExtension.results[0].author.avatar, "https://pbs.twimg.com/profile_images/1/avatar.jpg");
 
   const modernAvatar = makeContext({
     timeline: timelineBody([

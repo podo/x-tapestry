@@ -4,6 +4,7 @@
 const apiBase = "https://x.com/i/api/graphql";
 const xHomeUrl = "https://x.com/";
 const xIconUrl = "https://x.com/favicon.ico";
+const defaultHomeLatestTimelineQueryId = "BKB7oi212Fi7kQtCBGE4zA";
 const defaultSearchTimelineQueryId = "Bcw3RzK-PatNAmbnw54hFw";
 const defaultUserByScreenNameQueryId = "2qvSHpkWTMS9i0zJAwDNiA";
 const defaultUserTweetsQueryId = "hr4gzZONlq23okjU8fIe_A";
@@ -11,7 +12,7 @@ const defaultTweetDetailQueryId = "97JF30KziU00483E_8elBA";
 const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
-const syncStateKey = "syncStateV4";
+const syncStateKey = "syncStateV5";
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
@@ -110,7 +111,13 @@ async function verifyAsync() {
     icon: xIconUrl
   };
 
-  if (normalizedSourceMode() === "handles") {
+  const mode = normalizedSourceMode();
+  if (mode === "following") {
+    const page = await homeLatestTimelinePage(1, null, credentials);
+    const firstAvatar = page.items.length > 0 ? page.items[0].authorAvatar : null;
+    if (firstAvatar) result.icon = firstAvatar;
+  }
+  else if (mode === "handles") {
     const handles = normalizedHandles();
     if (handles.length === 0) throw new Error("Enter one or more valid X handles.");
 
@@ -145,10 +152,55 @@ async function verifyAsync() {
 
 async function loadAsync() {
   const credentials = normalizedCredentials();
-  if (normalizedSourceMode() === "handles") {
+  const mode = normalizedSourceMode();
+  if (mode === "following") {
+    return loadFollowingTimeline(credentials);
+  }
+  if (mode === "handles") {
     return loadHandleTimelines(credentials);
   }
   return loadSearchTimeline(credentials);
+}
+
+async function loadFollowingTimeline(credentials) {
+  const signature = currentSyncSignature("following");
+  const syncState = syncStateForSignature(signature);
+  const syncKey = "following";
+  const highWaterId = syncHighWater(syncState, syncKey);
+
+  const limit = normalizedBatchSize();
+  const tweets = [];
+  const fetchedIds = [];
+  let cursor = null;
+  let pageCount = 0;
+  let reachedKnownItem = false;
+
+  do {
+    const page = await homeLatestTimelinePage(limit, cursor, credentials);
+    for (const tweet of page.items) {
+      if (!tweet || !tweet.id) continue;
+      fetchedIds.push(tweet.id);
+      if (!shouldIncludeTweet(tweet)) continue;
+
+      if (highWaterId && compareIds(tweet.id, highWaterId) <= 0) {
+        reachedKnownItem = true;
+        continue;
+      }
+
+      tweets.push(tweet);
+    }
+
+    cursor = page.nextCursor;
+    pageCount += 1;
+  } while (highWaterId && cursor && !reachedKnownItem && pageCount < maximumIncrementalPages);
+
+  const newestId = maxId(fetchedIds);
+  if (newestId && (!highWaterId || compareIds(newestId, highWaterId) > 0)) {
+    setSyncHighWater(syncState, syncKey, newestId);
+  }
+
+  writeSyncState(syncState);
+  return tweetsToItems(tweets);
 }
 
 async function loadSearchTimeline(credentials) {
@@ -308,6 +360,29 @@ async function searchTimelinePage(query, count, cursor, credentials) {
   };
 }
 
+async function homeLatestTimelinePage(count, cursor, credentials) {
+  const variables = {
+    count,
+    seenTweetIds: []
+  };
+  if (cursor) variables.cursor = cursor;
+
+  const data = await graphqlPost(
+    "HomeLatestTimeline",
+    normalizedHomeLatestTimelineQueryId(),
+    variables,
+    readFeatures,
+    userTimelineFieldToggles,
+    credentials
+  );
+
+  const instructions = homeTimelineInstructions(data);
+  return {
+    items: extractTweetsFromInstructions(instructions),
+    nextCursor: bottomCursor(instructions)
+  };
+}
+
 async function userProfileByHandle(handle, credentials) {
   const data = await graphqlGet(
     "UserByScreenName",
@@ -443,6 +518,46 @@ async function graphqlGet(action, queryId, variables, features, fieldToggles, cr
     let text;
     try {
       text = await requestText(url, "GET", null, headers, action);
+      return parseGraphqlResponse(text, action);
+    }
+    catch (error) {
+      lastError = error;
+      if (attempt === 0 && isTransactionRetryableError(error)) {
+        clearTransactionCache();
+        continue;
+      }
+      if (attempt < 2 && isQueryIdRetryableError(error)) {
+        const discovered = await discoverQueryId(action, credentials, activeQueryId);
+        if (discovered && discovered !== activeQueryId) {
+          activeQueryId = discovered;
+          continue;
+        }
+      }
+      throw error;
+    }
+  }
+
+  throw lastError || new Error(`${action} failed.`);
+}
+
+async function graphqlPost(action, queryId, variables, features, fieldToggles, credentials) {
+  const body = {
+    variables
+  };
+  if (features) body.features = features;
+  if (fieldToggles) body.fieldToggles = fieldToggles;
+
+  let lastError = null;
+  let activeQueryId = queryId;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const path = `/i/api/graphql/${activeQueryId}/${action}`;
+    const url = `${apiBase}/${activeQueryId}/${action}`;
+    const headers = await graphQlHeaders("POST", path, credentials);
+    headers["Content-Type"] = "application/json";
+    let text;
+    try {
+      text = await requestText(url, "POST", JSON.stringify(body), headers, action);
       return parseGraphqlResponse(text, action);
     }
     catch (error) {
@@ -631,6 +746,17 @@ function searchTimelineInstructions(data) {
   return root && Array.isArray(root.instructions) ? root.instructions : [];
 }
 
+function homeTimelineInstructions(data) {
+  const home = data && data.data && data.data.home;
+  const root = home
+    && (
+      home.home_timeline_urt
+      || (home.timeline && home.timeline.timeline)
+      || home.timeline
+    );
+  return root && Array.isArray(root.instructions) ? root.instructions : [];
+}
+
 function userTimelineInstructions(data) {
   const user = data && data.data && data.data.user && data.data.user.result;
   const root = user
@@ -666,12 +792,25 @@ function extractTweetsFromInstructions(instructions) {
 
 function collectTweetFromEntry(entry, tweets) {
   if (!entry || !entry.content) return;
+  if (isPromotedEntry(entry)) return;
   collectTweetFromItemContent(entry.content.itemContent, tweets);
 
   const items = Array.isArray(entry.content.items) ? entry.content.items : [];
   for (const item of items) {
+    if (isPromotedEntry(item && item.item)) continue;
     collectTweetFromItemContent(item && item.item && item.item.itemContent, tweets);
   }
+}
+
+function isPromotedEntry(entry) {
+  const content = entry && entry.content ? entry.content : {};
+  const itemContent = content.itemContent || {};
+  return Boolean(
+    String(entry && entry.entryId || "").indexOf("promoted") >= 0
+    || content.promotedMetadata
+    || itemContent.promotedMetadata
+    || itemContent.promoted_metadata
+  );
 }
 
 function collectTweetFromItemContent(itemContent, tweets) {
@@ -1628,6 +1767,7 @@ function currentSyncSignature(query) {
     showLinkCards: showLinkCards(),
     fetchLinkPreviews: fetchLinkPreviews(),
     batchSize: normalizedBatchSize(),
+    homeLatestTimelineQueryId: normalizedHomeLatestTimelineQueryId(),
     searchQueryId: normalizedSearchQueryId(),
     userByScreenNameQueryId: normalizedUserByScreenNameQueryId(),
     userTweetsQueryId: normalizedUserTweetsQueryId(),
@@ -1679,7 +1819,7 @@ function writeSyncState(state) {
 function buildSearchQuery() {
   const mode = normalizedSourceMode();
   const input = stringInput("x_sources").trim();
-  if (!input) {
+  if (!input && mode !== "following") {
     throw new Error("Enter one or more X handles, or switch Source Mode to Search Query and enter a query.");
   }
 
@@ -1704,9 +1844,11 @@ function buildSearchQuery() {
 }
 
 function sourceLabel() {
-  if (normalizedSourceMode() === "search query") return "Search";
+  const mode = normalizedSourceMode();
+  if (mode === "following") return "Following Feed";
+  if (mode === "search query") return "Search";
   const handles = normalizedHandles();
-  if (handles.length === 0) return "Handles";
+  if (handles.length === 0) return "Individual Accounts";
   if (handles.length <= 2) return handles.map(handle => `@${handle}`).join(", ");
   return `@${handles[0]} + ${handles.length - 1}`;
 }
@@ -1767,7 +1909,9 @@ function completeCookieHeader(header, authToken, csrf) {
 
 function normalizedSourceMode() {
   const value = normalizedChoice(stringInput("source_mode"));
-  return value === "search query" ? "search query" : "handles";
+  if (value === "following feed" || value === "feed" || value === "following") return "following";
+  if (value === "search query" || value === "search") return "search query";
+  return "handles";
 }
 
 function normalizedSearchProduct() {
@@ -1778,6 +1922,11 @@ function normalizedSearchProduct() {
 function normalizedBatchSize() {
   const value = parseInt(stringInput("batch_size"), 10);
   return [20, 50, 100].includes(value) ? value : 50;
+}
+
+function normalizedHomeLatestTimelineQueryId() {
+  const value = stringInput("home_latest_timeline_query_id").trim();
+  return value || defaultHomeLatestTimelineQueryId;
 }
 
 function normalizedSearchQueryId() {
@@ -2262,8 +2411,12 @@ function normalizedAvatar(value) {
   try {
     const url = new URL(raw);
     if (/twimg\.com$/i.test(url.hostname) && url.pathname.indexOf("/profile_images/") >= 0) {
+      const format = (url.searchParams.get("format") || "").toLowerCase().replace("jpeg", "jpg");
       const path = url.pathname.replace(/_(normal|bigger|mini|200x200|400x400)(\.[^/.]+)$/i, "$2");
       if (path !== url.pathname) url.pathname = path;
+      if (!/\.[A-Za-z0-9]+$/.test(url.pathname) && /^(jpg|png|gif|webp)$/.test(format)) {
+        url.pathname = `${url.pathname}.${format}`;
+      }
       if (/\.[A-Za-z0-9]+$/.test(url.pathname)) {
         url.search = "";
         return url.toString();

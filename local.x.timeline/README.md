@@ -18,8 +18,9 @@ or third-party tweet-pulling service.
    URL to prefill the handle.
 4. Paste the full cookie header into **Cookie Header**, or paste the individual
    values into **auth_token Cookie** and **ct0 Cookie**.
-5. Set **Source Mode** to **Handles** and enter comma-separated handles such as
-   `openai, sama`, or set it to **Search Query** and enter a full X search.
+5. Set **Source Mode** to **Following Feed** for your authenticated X home feed,
+   **Individual Accounts** for comma-separated handles such as `openai, sama`,
+   or **Search Query** for a full X search.
 
 The cookies are entered during feed setup and are not included in the connector
 bundle. Treat them like passwords. Do not commit them, paste them into issues,
@@ -28,7 +29,8 @@ or include them in screenshots.
 ## Features
 
 - Zero per-tweet cost through an authenticated `x.com` web session
-- Comma-separated handle feeds using X profile timelines
+- Following Feed mode using your authenticated reverse-chronological X home feed
+- Individual Accounts mode using comma-separated X profile timelines
 - Raw X search query feeds for advanced filters
 - Feed Finder support for `@handle`, `x.com`, and `twitter.com` inputs
 - Setup suggestions for common handle/search examples
@@ -48,7 +50,8 @@ or include them in screenshots.
 - Linked URLs, handles, hashtags, and cashtags in post text
 - Content warnings for sensitive posts when X marks them
 - Incremental refresh by newest post ID per source, with paginated catch-up
-- Connector sync state was bumped in v1.2.1 so existing feeds reload recent items with updated card/avatar rendering
+- Promoted home-feed entries are filtered out before they become Tapestry items
+- Connector sync state was bumped in v1.3.0 so existing feeds reload recent items with updated feed/card/avatar rendering
 - Configurable advanced query IDs for when X rotates web GraphQL IDs
 
 ## Reliability Notes
