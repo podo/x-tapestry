@@ -28,8 +28,11 @@ or include them in screenshots.
 - Latest or Top search mode
 - Optional reply and repost filtering
 - Native post-style Tapestry items with author identity and avatar
-- Optional media attachments from post images, videos, and GIFs
-- Optional link cards for external links when no media is attached
+- Optional media attachments from post images, videos, GIFs, and note posts
+- Video/GIF attachments include explicit media type and thumbnail metadata
+- Optional link cards for external links when no richer attachment is present
+- Quoted posts are attached as Tapestry quoted-item previews
+- Poll cards are attached when X includes poll metadata in the response
 - Metrics annotations for replies, reposts, quotes, likes, and views
 - Incremental refresh by newest post ID, with paginated catch-up
 - Configurable SearchTimeline query ID for when X rotates web GraphQL IDs

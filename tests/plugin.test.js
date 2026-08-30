@@ -32,6 +32,7 @@ function tweetResult(overrides = {}) {
   const id = overrides.id || "1950000000000000001";
   const username = overrides.username || "openai";
   const fullText = overrides.fullText || "Hello <world>\nhttps://t.co/a";
+  const profileImageUrl = overrides.profile_image_url || `https://pbs.twimg.com/profile_images/${username}_normal.jpg`;
   const legacy = {
     id_str: id,
     full_text: fullText,
@@ -71,18 +72,36 @@ function tweetResult(overrides = {}) {
           core: {
             screen_name: username,
             name: overrides.name || "OpenAI",
-            profile_image_url: `https://pbs.twimg.com/profile_images/${username}_normal.jpg`
+            profile_image_url: profileImageUrl
           },
           legacy: {
             screen_name: username,
             name: overrides.name || "OpenAI"
-          }
+          },
+          avatar: overrides.avatar
         }
       }
     },
     views: { count: overrides.views ?? "1234" },
-    quoted_status_result: overrides.quoted_status_result
+    quoted_status_result: overrides.quoted_status_result,
+    card: overrides.card
   };
+}
+
+function card(bindings) {
+  return {
+    legacy: {
+      binding_values: Object.keys(bindings).map(key => ({ key, value: bindings[key] }))
+    }
+  };
+}
+
+function stringValue(value) {
+  return { string_value: value };
+}
+
+function imageValue(url, width, height) {
+  return { image_value: { url, width, height } };
 }
 
 function timelineBody(results, cursor = null) {
@@ -168,6 +187,16 @@ function makeContext(overrides = {}) {
     LinkAttachment: {
       createWithUrl: url => ({ url, kind: "link" })
     },
+    PollAttachment: {
+      create: () => ({ kind: "poll" })
+    },
+    PollOption: {
+      create: (title, votes) => (
+        votes == null
+          ? { title }
+          : { title, votes }
+      )
+    },
     _state: state,
     _calls: calls,
     ...overrides
@@ -220,10 +249,13 @@ async function run() {
   assert.match(item.body, /Hello &lt;world&gt;<br>/);
   assert.doesNotMatch(item.body, /<world>/);
   assert.match(item.body, /example\.com\/article/);
+  assert.doesNotMatch(item.body, /Open on X/);
   assert.strictEqual(item.author.name, "OpenAI");
   assert.strictEqual(item.author.username, "@openai");
   assert.match(item.author.avatar, /_400x400\.jpg$/);
   assert.strictEqual(item.attachments[0].url, "https://pbs.twimg.com/media/a.jpg");
+  assert.strictEqual(item.attachments[0].mimeType, "image/jpeg");
+  assert.strictEqual(item.attachments[0].text, "Alt text");
   assert.strictEqual(item.attachments[0].aspectSize.width, 1200);
   assert.strictEqual(item.attachments[0].aspectSize.height, 800);
   assert.match(item.annotations[0].text, /4 replies/);
@@ -269,6 +301,132 @@ async function run() {
   assert.ifError(wrapped.error);
   assert.strictEqual(wrapped.results[0].attachments[0].kind, "link");
   assert.strictEqual(wrapped.results[0].attachments[0].url, "https://example.com/article");
+
+  const linkCard = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000005",
+        legacy: { extended_entities: { media: [] } },
+        card: card({
+          card_url: stringValue("https://example.com/card"),
+          title: stringValue("Card title"),
+          description: stringValue("Card summary"),
+          domain: stringValue("example.com"),
+          author_name: stringValue("Example Author"),
+          thumbnail_image_original: imageValue("https://pbs.twimg.com/card_img/abc?format=jpg&name=small", 640, 360)
+        })
+      })
+    ])
+  });
+  vm.runInContext("load()", linkCard);
+  await settle();
+  assert.ifError(linkCard.error);
+  assert.strictEqual(linkCard.results[0].attachments[0].kind, "link");
+  assert.strictEqual(linkCard.results[0].attachments[0].url, "https://example.com/card");
+  assert.strictEqual(linkCard.results[0].attachments[0].title, "Card title");
+  assert.strictEqual(linkCard.results[0].attachments[0].subtitle, "Card summary");
+  assert.strictEqual(linkCard.results[0].attachments[0].siteName, "example.com");
+  assert.strictEqual(linkCard.results[0].attachments[0].authorName, "Example Author");
+  assert.strictEqual(linkCard.results[0].attachments[0].image, "https://pbs.twimg.com/card_img/abc?format=jpg&name=small");
+  assert.strictEqual(linkCard.results[0].attachments[0].aspectSize.width, 640);
+
+  const video = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000006",
+        legacy: {
+          extended_entities: {
+            media: [
+              {
+                type: "video",
+                media_url_https: "https://pbs.twimg.com/ext_tw_video_thumb/a.jpg",
+                video_info: {
+                  aspect_ratio: [16, 9],
+                  variants: [
+                    { content_type: "application/x-mpegURL", url: "https://video.twimg.com/a.m3u8" },
+                    { content_type: "video/mp4", bitrate: 256000, url: "https://video.twimg.com/a-256.mp4" },
+                    { content_type: "video/mp4", bitrate: 832000, url: "https://video.twimg.com/a-832.mp4" }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      })
+    ])
+  });
+  vm.runInContext("load()", video);
+  await settle();
+  assert.ifError(video.error);
+  assert.strictEqual(video.results[0].attachments[0].url, "https://video.twimg.com/a-832.mp4");
+  assert.strictEqual(video.results[0].attachments[0].mimeType, "video/mp4");
+  assert.strictEqual(video.results[0].attachments[0].thumbnail, "https://pbs.twimg.com/ext_tw_video_thumb/a.jpg");
+  assert.strictEqual(video.results[0].attachments[0].aspectSize.width, 16);
+  assert.strictEqual(video.results[0].attachments[0].aspectSize.height, 9);
+
+  const queryAvatar = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000007",
+        profile_image_url: "https://pbs.twimg.com/profile_images/1/avatar?format=jpg&name=normal"
+      })
+    ])
+  });
+  vm.runInContext("load()", queryAvatar);
+  await settle();
+  assert.ifError(queryAvatar.error);
+  assert.strictEqual(queryAvatar.results[0].author.avatar, "https://pbs.twimg.com/profile_images/1/avatar?format=jpg&name=400x400");
+
+  const quoted = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000008",
+        fullText: "Quoting this",
+        legacy: { extended_entities: { media: [] }, entities: { urls: [] } },
+        quoted_status_result: {
+          result: tweetResult({
+            id: "1950000000000000009",
+            username: "sama",
+            name: "Sam Altman",
+            fullText: "Quoted text",
+            legacy: { extended_entities: { media: [] }, entities: { urls: [] } }
+          })
+        }
+      })
+    ])
+  });
+  vm.runInContext("load()", quoted);
+  await settle();
+  assert.ifError(quoted.error);
+  assert.strictEqual(quoted.results[0].attachments[0].uri, "https://x.com/sama/status/1950000000000000009");
+  assert.strictEqual(quoted.results[0].attachments[0].author.username, "@sama");
+  assert.match(quoted.results[0].attachments[0].body, /Quoted text/);
+  assert.doesNotMatch(quoted.results[0].body, /Quoted text/);
+
+  const poll = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000010",
+        legacy: { extended_entities: { media: [] }, entities: { urls: [] } },
+        card: card({
+          choice1_label: stringValue("Yes"),
+          choice1_count: stringValue("42"),
+          choice2_label: stringValue("No"),
+          choice2_count: stringValue("8"),
+          end_datetime_utc: stringValue("1800000000")
+        })
+      })
+    ])
+  });
+  vm.runInContext("load()", poll);
+  await settle();
+  assert.ifError(poll.error);
+  assert.strictEqual(poll.results[0].attachments[0].kind, "poll");
+  assert.strictEqual(poll.results[0].attachments[0].options[0].title, "Yes");
+  assert.strictEqual(poll.results[0].attachments[0].options[0].votes, 42);
+  assert.strictEqual(poll.results[0].attachments[0].options[1].title, "No");
+  assert.strictEqual(poll.results[0].attachments[0].options[1].votes, 8);
+  assert.strictEqual(poll.results[0].attachments[0].endDate.toISOString(), "2027-01-15T08:00:00.000Z");
 
   const cookieOnly = makeContext({
     auth_token: "",
