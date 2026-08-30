@@ -1,0 +1,104 @@
+{
+  "inputs": [
+    {
+      "name": "cookie_header",
+      "type": "text",
+      "prompt": "Cookie Header (optional)",
+      "placeholder": "auth_token=...; ct0=..."
+    },
+    {
+      "name": "auth_token",
+      "type": "text",
+      "prompt": "auth_token Cookie",
+      "placeholder": "Paste auth_token if not using Cookie Header"
+    },
+    {
+      "name": "ct0",
+      "type": "text",
+      "prompt": "ct0 Cookie",
+      "placeholder": "Paste ct0 if not using Cookie Header"
+    },
+    {
+      "name": "source_mode",
+      "type": "choices",
+      "prompt": "Source Mode",
+      "choices": "Handles,Search Query",
+      "value": "Handles"
+    },
+    {
+      "name": "x_sources",
+      "type": "text",
+      "prompt": "Handles or Search Query",
+      "placeholder": "openai, sama or from:openai AI"
+    },
+    {
+      "name": "query_suffix",
+      "type": "text",
+      "prompt": "Extra Search Filters (optional)",
+      "placeholder": "lang:en min_faves:10"
+    },
+    {
+      "name": "search_product",
+      "type": "choices",
+      "prompt": "Search Type",
+      "choices": "Latest,Top",
+      "value": "Latest"
+    },
+    {
+      "name": "include_replies",
+      "type": "switch",
+      "prompt": "Include Replies",
+      "value": "off"
+    },
+    {
+      "name": "include_retweets",
+      "type": "switch",
+      "prompt": "Include Reposts",
+      "value": "off"
+    },
+    {
+      "name": "show_metrics",
+      "type": "switch",
+      "prompt": "Show Metrics",
+      "value": "on"
+    },
+    {
+      "name": "show_media",
+      "type": "switch",
+      "prompt": "Show Media",
+      "value": "on"
+    },
+    {
+      "name": "show_link_cards",
+      "type": "switch",
+      "prompt": "Show Link Cards",
+      "value": "on"
+    },
+    {
+      "name": "batch_size",
+      "type": "choices",
+      "prompt": "Initial Item Limit",
+      "choices": "20,50,100",
+      "value": "50"
+    },
+    {
+      "name": "use_transaction_header",
+      "type": "switch",
+      "prompt": "Use X Transaction Header",
+      "value": "on"
+    },
+    {
+      "name": "search_query_id",
+      "type": "text",
+      "prompt": "SearchTimeline Query ID",
+      "placeholder": "Leave blank for bundled value",
+      "value": "Bcw3RzK-PatNAmbnw54hFw"
+    },
+    {
+      "name": "bearer_token",
+      "type": "text",
+      "prompt": "Bearer Token Override (optional)",
+      "placeholder": "Leave blank for bundled public web token"
+    }
+  ]
+}
