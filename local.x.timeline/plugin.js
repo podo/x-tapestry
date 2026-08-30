@@ -12,7 +12,7 @@ const defaultTweetDetailQueryId = "97JF30KziU00483E_8elBA";
 const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
-const syncStateKey = "syncStateV7";
+const syncStateKey = "syncStateV11";
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
@@ -113,9 +113,7 @@ async function verifyAsync() {
 
   const mode = normalizedSourceMode();
   if (mode === "following") {
-    const page = await homeLatestTimelinePage(1, null, credentials);
-    const firstAvatar = page.items.length > 0 ? page.items[0].authorAvatar : null;
-    if (firstAvatar) result.icon = firstAvatar;
+    await homeLatestTimelinePage(1, null, credentials);
   }
   else if (mode === "handles") {
     const handles = normalizedHandles();
@@ -137,9 +135,7 @@ async function verifyAsync() {
   }
   else {
     const query = buildSearchQuery();
-    const page = await searchTimelinePage(query, 1, null, credentials);
-    const firstAvatar = page.items.length > 0 ? page.items[0].authorAvatar : null;
-    if (firstAvatar) result.icon = firstAvatar;
+    await searchTimelinePage(query, 1, null, credentials);
   }
 
   const accountIdentity = await currentAccountIdentity(credentials);
@@ -819,23 +815,31 @@ function isPromotedEntry(entry) {
 }
 
 function collectTweetFromItemContent(itemContent, tweets) {
-  const result = itemContent && itemContent.tweet_results && itemContent.tweet_results.result;
+  const wrapper = itemContent && (itemContent.tweet_results || itemContent.tweetResult);
+  const result = wrapper && (wrapper.result || wrapper);
   const tweet = normalizeTweet(result, true);
   if (tweet) tweets.push(tweet);
 }
 
 function normalizeTweet(rawResult, includeQuoted) {
   const result = unwrapTweetResult(rawResult);
-  const legacy = result && result.legacy;
-  if (!result || !legacy) return null;
+  const legacy = result && result.legacy ? result.legacy : null;
+  const details = result && result.details ? result.details : null;
+  if (!result || (!legacy && !details)) return null;
 
-  const id = legacy.id_str || result.rest_id;
+  const id = (legacy && legacy.id_str)
+    || (details && (details.id_str || details.id))
+    || result.rest_id;
   if (!id) return null;
 
-  const user = normalizeUser(result.core && result.core.user_results && result.core.user_results.result);
-  const date = tweetDate(legacy.created_at);
+  const userResult = result.core && (result.core.user_results || result.core.user_result);
+  const user = normalizeUser(userResult && (userResult.result || userResult));
+  const date = tweetDate(
+    (legacy && legacy.created_at)
+    || (details && (details.created_at || details.created_at_ms))
+  );
 
-  const retweetedRaw = legacy.retweeted_status_result && legacy.retweeted_status_result.result;
+  const retweetedRaw = legacy && legacy.retweeted_status_result && legacy.retweeted_status_result.result;
   if (retweetedRaw) {
     const retweeted = normalizeTweet(retweetedRaw, includeQuoted);
     if (!retweeted) return null;
@@ -850,14 +854,32 @@ function normalizeTweet(rawResult, includeQuoted) {
   const note = result.note_tweet
     && result.note_tweet.note_tweet_results
     && result.note_tweet.note_tweet_results.result;
-  const urlMappings = tweetUrlMappings(legacy.entities, note);
-  const text = expandedTweetText(legacy.full_text || "", legacy.entities, note, urlMappings);
+  const entities = legacy && legacy.entities;
+  const extraEntities = [
+    result.entities,
+    result.url_entities && { urls: result.url_entities },
+    details && details.url_entities && { urls: details.url_entities },
+    details && details.urls && { urls: details.urls },
+    details && details.entities,
+    details && details.entity_set
+  ].filter(Boolean);
+  const urlMappings = tweetUrlMappings(entities, note, extraEntities);
+  const fullText = (legacy && legacy.full_text)
+    || (details && (details.full_text || details.text))
+    || result.text
+    || "";
+  const text = expandedTweetText(fullText, entities, note, urlMappings);
   const media = extractMedia(result, legacy);
   const externalUrls = dedupeStrings(extractExternalUrls(urlMappings));
   const card = extractCard(result, externalUrls, urlMappings);
   const poll = extractPoll(result);
   const quotedRaw = result.quoted_status_result && result.quoted_status_result.result;
   const quoted = includeQuoted && quotedRaw ? normalizeTweet(quotedRaw, false) : null;
+  const counts = result.counts || result.metrics || {};
+  const replyStatusId = (legacy && legacy.in_reply_to_status_id_str)
+    || (details && details.in_reply_to_status_id_str);
+  const replyUsername = (legacy && legacy.in_reply_to_screen_name)
+    || (details && details.in_reply_to_screen_name);
 
   return {
     id,
@@ -867,31 +889,31 @@ function normalizeTweet(rawResult, includeQuoted) {
     authorName: user.name || user.username || "X",
     authorUsername: user.username || null,
     authorAvatar: user.avatar || null,
-    likes: finiteNumber(legacy.favorite_count),
-    reposts: finiteNumber(legacy.retweet_count),
-    replies: finiteNumber(legacy.reply_count),
-    quotes: finiteNumber(legacy.quote_count),
-    views: finiteNumber(result.views && result.views.count),
+    likes: finiteNumber(firstDefined(legacy && legacy.favorite_count, counts.favorite_count, counts.like_count)),
+    reposts: finiteNumber(firstDefined(legacy && legacy.retweet_count, counts.retweet_count, counts.repost_count)),
+    replies: finiteNumber(firstDefined(legacy && legacy.reply_count, counts.reply_count)),
+    quotes: finiteNumber(firstDefined(legacy && legacy.quote_count, counts.quote_count)),
+    views: finiteNumber(firstDefined(result.views && result.views.count, counts.view_count, counts.views_count)),
     media,
-    hiddenUrls: mediaHiddenUrls(media),
+    hiddenUrls: mediaHiddenUrls(media, urlMappings),
     externalUrls,
     card,
     poll,
-    isReply: Boolean(legacy.in_reply_to_status_id_str || legacy.in_reply_to_user_id_str),
-    replyToUsername: legacy.in_reply_to_screen_name || null,
-    isRetweet: /^RT @/.test(legacy.full_text || ""),
+    isReply: Boolean(replyStatusId || (legacy && legacy.in_reply_to_user_id_str)),
+    replyToUsername: replyUsername || null,
+    isRetweet: /^RT @/.test(fullText),
     repostedByName: null,
     repostedByUsername: null,
     repostedByAvatar: null,
-    contentWarning: legacy.possibly_sensitive ? "Sensitive content" : null,
+    contentWarning: (legacy && legacy.possibly_sensitive) ? "Sensitive content" : null,
     quoted
   };
 }
 
 function unwrapTweetResult(result) {
   if (!result || typeof result !== "object") return null;
-  if (result.tweet && result.tweet.legacy) return result.tweet;
-  if (result.result && result.result.legacy) return result.result;
+  if (result.tweet && (result.tweet.legacy || result.tweet.details)) return result.tweet;
+  if (result.result && (result.result.legacy || result.result.details)) return result.result;
   return result;
 }
 
@@ -951,14 +973,18 @@ function expandedTweetText(fullText, legacyEntities, note, mappings) {
   return text || "";
 }
 
-function tweetUrlMappings(legacyEntities, note) {
+function tweetUrlMappings(legacyEntities, note, extraEntities) {
   const mappings = [];
-  mappings.push(...urlMappings(legacyEntities && legacyEntities.urls));
-  if (note && note.entity_set) mappings.push(...urlMappings(note.entity_set.urls));
-  return mappings;
+  mappings.push(...urlMappingsFromContainer(legacyEntities));
+  mappings.push(...urlMappingsFromContainer(note));
+  mappings.push(...urlMappingsFromContainer(extraEntities));
+  return dedupeBy(mappings, mapping => `${mapping.source}|${mapping.expanded}|${mapping.display}`);
 }
 
 function urlMappings(urls) {
+  if (!Array.isArray(urls) && urls && typeof urls === "object") {
+    urls = Object.keys(urls).map(key => urls[key]);
+  }
   if (!Array.isArray(urls)) return [];
   return urls.map(url => ({
     source: url && url.url ? String(url.url) : "",
@@ -967,6 +993,21 @@ function urlMappings(urls) {
       : "",
     display: url && url.display_url ? String(url.display_url) : ""
   })).filter(mapping => mapping.source && mapping.expanded);
+}
+
+function urlMappingsFromContainer(container) {
+  if (!container) return [];
+  if (Array.isArray(container)) {
+    return container.flatMap(urlMappingsFromContainer);
+  }
+  if (typeof container !== "object") return [];
+
+  const mappings = [];
+  mappings.push(...urlMappings(container.urls || container.url_entities));
+  for (const nested of [container.entities, container.entity_set, container.data, container.result]) {
+    if (nested) mappings.push(...urlMappingsFromContainer(nested));
+  }
+  return mappings;
 }
 
 function extractExternalUrls(mappings) {
@@ -1058,13 +1099,22 @@ function mediaFromModernEntity(entry) {
       info.original_img_url
       || info.original_image_url
       || info.image_url
+      || info.media_url_https
+      || info.media_url
       || info.url
       || (info.preview_image && (info.preview_image.original_img_url || info.preview_image.url))
     );
   }
   else {
-    thumbnail = normalizedPhotoUrl(info.preview_image && (info.preview_image.original_img_url || info.preview_image.url));
-    const variants = Array.isArray(info.variants) ? info.variants : [];
+    thumbnail = normalizedPhotoUrl(
+      (info.preview_image && (info.preview_image.original_img_url || info.preview_image.url))
+      || info.media_url_https
+      || info.media_url
+    );
+    const videoInfo = info.video_info || {};
+    const variants = Array.isArray(info.variants)
+      ? info.variants
+      : Array.isArray(videoInfo.variants) ? videoInfo.variants : [];
     const mp4s = variants
       .filter(variant => variant && variant.url && /video\/mp4/i.test(variant.content_type || variant.type || ""))
       .sort((left, right) => finiteNumber(right.bit_rate || right.bitrate) - finiteNumber(left.bit_rate || left.bitrate));
@@ -1096,8 +1146,9 @@ function modernMediaInfo(entry) {
 }
 
 function modernMediaDimensions(info) {
-  let width = finiteNumber(info && (info.original_img_width || info.original_width || info.width));
-  let height = finiteNumber(info && (info.original_img_height || info.original_height || info.height));
+  const original = info && info.original_info ? info.original_info : {};
+  let width = finiteNumber(info && (info.original_img_width || info.original_width || info.width || original.width));
+  let height = finiteNumber(info && (info.original_img_height || info.original_height || info.height || original.height));
 
   const preview = info && info.preview_image ? info.preview_image : {};
   if (!width || !height) {
@@ -1110,21 +1161,38 @@ function modernMediaDimensions(info) {
     height = finiteNumber(info.aspect_ratio[1]);
   }
 
+  const videoInfo = info && info.video_info ? info.video_info : {};
+  if ((!width || !height) && Array.isArray(videoInfo.aspect_ratio)) {
+    width = finiteNumber(videoInfo.aspect_ratio[0]);
+    height = finiteNumber(videoInfo.aspect_ratio[1]);
+  }
+
   return { width, height };
 }
 
 function mediaEntityHiddenUrls(entry) {
+  const info = modernMediaInfo(entry);
   return dedupeStrings([
     entry && entry.url,
     entry && entry.expanded_url,
-    entry && entry.display_url
+    entry && entry.display_url,
+    info && info.url,
+    info && info.expanded_url,
+    info && info.display_url
   ].filter(Boolean).map(String));
 }
 
-function mediaHiddenUrls(media) {
+function mediaHiddenUrls(media, mappings) {
   const urls = [];
   for (const item of media || []) {
     if (Array.isArray(item.hiddenUrls)) urls.push(...item.hiddenUrls);
+  }
+  for (const mapping of mappings || []) {
+    if (!mapping || !mapping.source) continue;
+    // Modern X media may expose the media URL only through the tweet entity.
+    if (!isExternalWebUrl(mapping.expanded)) {
+      urls.push(mapping.source, mapping.expanded, mapping.display);
+    }
   }
   return dedupeStrings(urls);
 }
@@ -1266,6 +1334,12 @@ function cardContainers(result) {
 }
 
 function mergeCardBindingValues(values, container) {
+  const legacy = container && container.legacy ? container.legacy : {};
+  for (const key of ["name", "url", "expanded_url", "website_url", "destination_url"]) {
+    const candidate = container && container[key] != null ? container[key] : legacy[key];
+    if (candidate != null && values[key] == null) values[key] = candidate;
+  }
+
   const bindings = (container && container.legacy && container.legacy.binding_values)
     || (container && container.binding_values);
 
@@ -1286,6 +1360,8 @@ function firstExternalCardUrl(values, mappings) {
     "card_url",
     "expanded_url",
     "url",
+    "website_url",
+    "destination_url",
     "vanity_url",
     "player_url",
     "player_stream_url",
@@ -1337,10 +1413,30 @@ function cardHiddenUrls(url, externalUrls, values, mappings) {
   for (const candidate of externalUrls || []) {
     if (equivalentWebUrl(candidate, url)) urls.push(candidate);
   }
-  const cardUrl = cardString(values.card_url);
-  if (cardUrl) urls.push(cardUrl);
-  const expanded = expandedUrlForSource(cardUrl, mappings);
-  if (expanded && equivalentWebUrl(expanded, url)) urls.push(expanded);
+  for (const mapping of mappings || []) {
+    if (!mapping) continue;
+    if (equivalentWebUrl(mapping.expanded, url) || equivalentWebUrl(mapping.source, url)) {
+      urls.push(mapping.source, mapping.expanded, mapping.display);
+    }
+  }
+  const candidates = [
+    "card_url",
+    "expanded_url",
+    "url",
+    "website_url",
+    "destination_url",
+    "player_url",
+    "player_stream_url",
+    "site_url",
+    "app_url"
+  ];
+  for (const key of candidates) {
+    const value = cardString(values[key]);
+    if (!value) continue;
+    urls.push(value);
+    const expanded = expandedUrlForSource(value, mappings);
+    if (expanded && equivalentWebUrl(expanded, url)) urls.push(expanded);
+  }
   return dedupeStrings(urls);
 }
 
@@ -2594,6 +2690,14 @@ class Cubic {
 
 function tweetDate(value) {
   if (!value) return new Date();
+  if (typeof value === "number" || /^\d+$/.test(String(value))) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      const milliseconds = numeric < 100000000000 ? numeric * 1000 : numeric;
+      const numericDate = new Date(milliseconds);
+      if (!Number.isNaN(numericDate.getTime())) return numericDate;
+    }
+  }
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? new Date() : date;
 }
@@ -2647,6 +2751,10 @@ function finiteNumber(value) {
   return Number.isFinite(number) ? number : 0;
 }
 
+function firstDefined(...values) {
+  return values.find(value => value != null);
+}
+
 function formatCount(value) {
   const number = finiteNumber(value);
   return number.toLocaleString("en-US");
@@ -2654,29 +2762,7 @@ function formatCount(value) {
 
 function normalizedAvatar(value) {
   if (!isWebUrl(value)) return null;
-
-  const raw = String(value).trim();
-  try {
-    const url = new URL(raw);
-    if (/twimg\.com$/i.test(url.hostname) && url.pathname.indexOf("/profile_images/") >= 0) {
-      const format = (url.searchParams.get("format") || "").toLowerCase().replace("jpeg", "jpg");
-      const path = url.pathname.replace(/_(normal|bigger|mini|200x200|400x400)(\.[^/.]+)$/i, "$2");
-      if (path !== url.pathname) url.pathname = path;
-      if (!/\.[A-Za-z0-9]+$/.test(url.pathname) && /^(jpg|png|gif|webp)$/.test(format)) {
-        url.pathname = `${url.pathname}.${format}`;
-      }
-      if (/\.[A-Za-z0-9]+$/.test(url.pathname)) {
-        url.search = "";
-        return url.toString();
-      }
-      return url.toString();
-    }
-  }
-  catch (error) {
-    return raw.replace(/_(normal|bigger|mini|200x200|400x400)(\.[^/.]+)$/i, "$2");
-  }
-
-  return raw.replace(/_(normal|bigger|mini|200x200|400x400)(\.[^/.]+)$/i, "$2");
+  return String(value).trim();
 }
 
 function isExternalWebUrl(value) {

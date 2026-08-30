@@ -360,9 +360,7 @@ function makeContext(overrides = {}) {
       createWithUriDate: (uri, date) => ({ uri, date })
     },
     Identity: {
-      create: () => {
-        throw new Error("Use createWithName and explicit identity properties for avatar compatibility.");
-      },
+      create: () => { throw new Error("Identity.create should not be used for X item authors"); },
       createWithName: name => ({ name })
     },
     Annotation: {
@@ -424,7 +422,7 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 7);
+  assert.strictEqual(pluginConfig.version, 11);
   const sourceModeInput = uiConfig.inputs.find(input => input.name === "source_mode");
   assert.ok(sourceModeInput.choices.includes("Following Feed"));
   assert.ok(sourceModeInput.choices.includes("Individual Accounts"));
@@ -452,7 +450,7 @@ async function run() {
   assert.ifError(context.error);
   assert.strictEqual(context.verification.displayName, "X - @openai, @sama");
   assert.strictEqual(context.verification.accountIdentity.username, "@podo");
-  assert.match(context.verification.accountIdentity.avatar, /podo\.jpg$/);
+  assert.match(context.verification.accountIdentity.avatar, /podo_normal\.jpg$/);
 
   const verifyProfileApi = apiCall(context, "UserByScreenName");
   assert.ok(verifyProfileApi, "verify should resolve configured handles");
@@ -482,7 +480,7 @@ async function run() {
   assert.strictEqual(item.author.name, "OpenAI");
   assert.strictEqual(item.author.username, "@openai");
   assert.strictEqual(item.author.uri, "https://x.com/openai");
-  assert.match(item.author.avatar, /openai\.jpg$/);
+  assert.match(item.author.avatar, /openai_normal\.jpg$/);
   assert.deepStrictEqual(JSON.parse(item.actions.thread), {
     tweetId: "1950000000000000001",
     url: "https://x.com/openai/status/1950000000000000001"
@@ -496,7 +494,7 @@ async function run() {
   assert.match(item.annotations[0].text, /12 likes/);
   assert.match(item.annotations[0].text, /1,234 views/);
 
-  const initialState = JSON.parse(context._state.get("syncStateV7"));
+  const initialState = JSON.parse(context._state.get("syncStateV11"));
   assert.strictEqual(initialState.highWaterBySource["handle:openai"], "1950000000000000001");
   assert.strictEqual(initialState.highWaterBySource["handle:sama"], "1950000000000000001");
 
@@ -509,7 +507,7 @@ async function run() {
   assert.ifError(context.error);
   assert.strictEqual(context.results.length, 1);
   assert.strictEqual(context.results[0].uri, "https://x.com/openai/status/1950000000000000003");
-  const nextState = JSON.parse(context._state.get("syncStateV7"));
+  const nextState = JSON.parse(context._state.get("syncStateV11"));
   assert.strictEqual(nextState.highWaterBySource["handle:openai"], "1950000000000000003");
   assert.strictEqual(nextState.highWaterBySource["handle:sama"], "1950000000000000003");
 
@@ -529,6 +527,7 @@ async function run() {
   assert.strictEqual(rawVariables.rawQuery, "from:openai build");
   assert.strictEqual(rawVariables.product, "Latest");
   assert.ok(!rawSearchApi.headers["x-client-transaction-id"]);
+  assert.strictEqual(rawSearch.verification.icon, "https://x.com/favicon.ico");
 
   const promotedTweet = tweetResult({
     id: "1950000000000000023",
@@ -577,7 +576,7 @@ async function run() {
   await settle();
   assert.ifError(following.error);
   assert.strictEqual(following.verification.displayName, "X - Following Feed");
-  assert.strictEqual(following.verification.icon, "https://pbs.twimg.com/profile_images/7/verge.jpg");
+  assert.strictEqual(following.verification.icon, "https://x.com/favicon.ico");
   const homeVerifyApi = apiCall(following, "HomeLatestTimeline");
   assert.ok(homeVerifyApi, "verify should call HomeLatestTimeline");
   assert.strictEqual(homeVerifyApi.method, "POST");
@@ -597,7 +596,7 @@ async function run() {
   assert.ifError(following.error);
   assert.strictEqual(following.results.length, 1);
   assert.strictEqual(following.results[0].author.username, "@verge");
-  assert.strictEqual(following.results[0].author.avatar, "https://pbs.twimg.com/profile_images/7/verge.jpg");
+  assert.strictEqual(following.results[0].author.avatar, "https://pbs.twimg.com/profile_images/7/verge_normal.jpg");
   assert.strictEqual(following.results[0].attachments[0].kind, "link");
   assert.strictEqual(following.results[0].attachments[0].title, "Home feed story");
   assert.strictEqual(following.results[0].attachments[0].subtitle, "Rendered from webpage metadata");
@@ -614,7 +613,7 @@ async function run() {
   assert.strictEqual(homeLoadVariables.requestContext, "launch");
   assert.strictEqual(homeLoadVariables.withCommunity, true);
   assert.strictEqual(homeLoadVariables.enableRanking, false);
-  assert.deepStrictEqual(JSON.parse(following._state.get("syncStateV7")).highWaterBySource.following, "1950000000000000022");
+  assert.deepStrictEqual(JSON.parse(following._state.get("syncStateV11")).highWaterBySource.following, "1950000000000000022");
 
   const wrapped = makeContext({
     timeline: timelineBody([{ tweet: tweetResult({ id: "1950000000000000004" }) }]),
@@ -1006,6 +1005,152 @@ async function run() {
   assert.strictEqual(modernVideo.results[0].attachments[0].mimeType, "video/mp4");
   assert.strictEqual(modernVideo.results[0].body, "<p>Modern video</p>");
 
+  const modernNestedVideo = tweetResult({
+    id: "1950000000000000028",
+    username: "nesteduser",
+    name: "Nested User",
+    profile_image_url: "",
+    fullText: "Ignored legacy text",
+    legacy: undefined
+  });
+  delete modernNestedVideo.legacy;
+  modernNestedVideo.details = {
+    id_str: "1950000000000000028",
+    full_text: "Nested video https://t.co/nested",
+    created_at_ms: "1787980800000",
+    url_entities: [urlEntity("https://t.co/nested", "https://example.com/nested", "example.com/nested")]
+  };
+  modernNestedVideo.core = {
+    user_result: {
+      result: {
+        rest_id: "nesteduser-id",
+        core: {
+          screen_name: "nesteduser",
+          name: "Nested User",
+          profile_image_url: "https://pbs.twimg.com/profile_images/9/nested_normal.jpg"
+        },
+        legacy: {
+          screen_name: "nesteduser",
+          name: "Nested User"
+        }
+      }
+    }
+  };
+  modernNestedVideo.counts = {
+    favorite_count: 6,
+    retweet_count: 4,
+    reply_count: 2,
+    quote_count: 1,
+    view_count: 900
+  };
+  modernNestedVideo.media_entities = [{
+    media_key: "7_2",
+    url: "https://t.co/nested",
+    media_results: {
+      result: {
+        media_info: {
+          __typename: "ApiVideo",
+          media_url_https: "https://pbs.twimg.com/amplify_video_thumb/9/nested.jpg",
+          original_info: { width: 1920, height: 1080 },
+          video_info: {
+            aspect_ratio: [16, 9],
+            variants: [
+              { content_type: "video/mp4", bit_rate: 640000, url: "https://video.twimg.com/nested-low.mp4" },
+              { content_type: "video/mp4", bit_rate: 2240000, url: "https://video.twimg.com/nested-high.mp4" }
+            ]
+          }
+        }
+      }
+    }
+  }];
+  const modernNested = makeContext({ timeline: timelineBody([{ tweet: modernNestedVideo }]) });
+  vm.runInContext("load()", modernNested);
+  await settle();
+  assert.ifError(modernNested.error);
+  assert.strictEqual(modernNested.results.length, 1);
+  assert.strictEqual(modernNested.results[0].author.name, "Nested User");
+  assert.strictEqual(modernNested.results[0].author.username, "@nesteduser");
+  assert.strictEqual(modernNested.results[0].author.avatar, "https://pbs.twimg.com/profile_images/9/nested_normal.jpg");
+  assert.strictEqual(modernNested.results[0].body, "<p>Nested video <a href=\"https://example.com/nested\">example.com/nested</a></p>");
+  assert.strictEqual(modernNested.results[0].attachments[0].url, "https://video.twimg.com/nested-high.mp4");
+  assert.strictEqual(modernNested.results[0].attachments[0].thumbnail, "https://pbs.twimg.com/amplify_video_thumb/9/nested.jpg");
+  assert.strictEqual(modernNested.results[0].attachments[0].aspectSize.width, 1920);
+  assert.strictEqual(modernNested.results[0].attachments[0].aspectSize.height, 1080);
+  assert.match(modernNested.results[0].annotations.map(annotation => annotation.text).join(" "), /6 likes/);
+
+  const nestedEntityLinks = tweetResult({
+    id: "1950000000000000030",
+    username: "nestedlinks",
+    name: "Nested Links",
+    profile_image_url: "https://pbs.twimg.com/profile_images/10/nestedlinks_normal.jpg",
+    fullText: "Ignored legacy text",
+    legacy: undefined
+  });
+  delete nestedEntityLinks.legacy;
+  nestedEntityLinks.details = {
+    id_str: "1950000000000000030",
+    full_text: "Details entity link https://t.co/details",
+    created_at_ms: "1787980800000",
+    entities: {
+      urls: [urlEntity(
+        "https://t.co/details",
+        "https://example.org/details",
+        "example.org/details"
+      )]
+    }
+  };
+  nestedEntityLinks.core = {
+    user_result: {
+      result: {
+        rest_id: "nestedlinks-id",
+        core: {
+          screen_name: "nestedlinks",
+          name: "Nested Links",
+          profile_image_url: "https://pbs.twimg.com/profile_images/10/nestedlinks_normal.jpg"
+        }
+      }
+    }
+  };
+  const nestedEntityContext = makeContext({
+    timeline: timelineBody([{ tweet: nestedEntityLinks }])
+  });
+  vm.runInContext("load()", nestedEntityContext);
+  await settle();
+  assert.ifError(nestedEntityContext.error);
+  assert.strictEqual(nestedEntityContext.results[0].body, "<p>Details entity link</p>");
+  assert.strictEqual(nestedEntityContext.results[0].attachments[0].kind, "link");
+  assert.strictEqual(nestedEntityContext.results[0].attachments[0].url, "https://example.org/details");
+
+  const mediaEntitySource = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000029",
+        fullText: "Baby elephant https://t.co/media",
+        legacy: {
+          entities: {
+            urls: [urlEntity(
+              "https://t.co/media",
+              "https://x.com/rainmaker1973/status/1950000000000000029/photo/1",
+              "x.com/rainmaker1973/status/1950000000000000029/photo/1"
+            )]
+          },
+          extended_entities: {
+            media: [{
+              type: "photo",
+              media_url_https: "https://pbs.twimg.com/media/elephant.jpg",
+              original_info: { width: 1200, height: 800 }
+            }]
+          }
+        }
+      })
+    ])
+  });
+  vm.runInContext("load()", mediaEntitySource);
+  await settle();
+  assert.ifError(mediaEntitySource.error);
+  assert.strictEqual(mediaEntitySource.results[0].body, "<p>Baby elephant</p>");
+  assert.strictEqual(mediaEntitySource.results[0].attachments[0].url, "https://pbs.twimg.com/media/elephant.jpg");
+
   const queryAvatar = makeContext({
     timeline: timelineBody([
       tweetResult({
@@ -1017,7 +1162,7 @@ async function run() {
   vm.runInContext("load()", queryAvatar);
   await settle();
   assert.ifError(queryAvatar.error);
-  assert.strictEqual(queryAvatar.results[0].author.avatar, "https://pbs.twimg.com/profile_images/1/avatar.jpg");
+  assert.strictEqual(queryAvatar.results[0].author.avatar, "https://pbs.twimg.com/profile_images/1/avatar.jpg?format=jpg&name=normal");
 
   const queryAvatarWithoutExtension = makeContext({
     timeline: timelineBody([
@@ -1030,7 +1175,7 @@ async function run() {
   vm.runInContext("load()", queryAvatarWithoutExtension);
   await settle();
   assert.ifError(queryAvatarWithoutExtension.error);
-  assert.strictEqual(queryAvatarWithoutExtension.results[0].author.avatar, "https://pbs.twimg.com/profile_images/1/avatar.jpg");
+  assert.strictEqual(queryAvatarWithoutExtension.results[0].author.avatar, "https://pbs.twimg.com/profile_images/1/avatar?format=jpg&name=normal");
 
   const modernAvatar = makeContext({
     timeline: timelineBody([

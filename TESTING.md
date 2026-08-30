@@ -22,6 +22,7 @@ The mocked suite verifies:
 - Stable X profile-image URLs, including the newer `avatar.image_url` field
 - Post body escaping, linkification, and media/preview URL removal
 - Legacy and modern X media entities for photos, videos, GIF thumbnails, poll, quoted-post, and metric annotations
+- Modern detail-style tweets, `core.user_result` authors, and nested `media_info.video_info` variants
 - X-provided rich link cards, including `tweet_card` and unified-card payloads
 - Higher-resolution X media/card image URL normalization
 - Cached Open Graph/Twitter Card fallback previews for plain URLs
@@ -41,6 +42,23 @@ The packaged `plugin-config.json` version should increase whenever rendering or
 sync behavior changes, so Tapestry reloads existing feed output.
 
 ## Live Tapestry Checks
+
+For a redacted, repeatable Loom-side run, use the bundled harness. It reads the
+same saved feed configuration Loom uses by default, or accepts a feed JSON path
+explicitly. It prints only configuration keys with secrets redacted, request
+summaries, item counts, and media reachability checks:
+
+```sh
+node /Users/podo/.codex/skills/tapestry-connector/scripts/loom_connector_harness.mjs \
+  --connector "$PWD/local.x.timeline" \
+  --mode both \
+  --sample 8 \
+  --check-media
+```
+
+If Loom has not saved the feed yet, pass its exported/supplied feed JSON with
+`--feed-json /path/to/feed.json`. Do not put cookie values in shell history or
+command output; use Loom's saved settings or a protected local config file.
 
 Use Tapestry Loom or Tapestry with a real X cookie header and create three feeds:
 
