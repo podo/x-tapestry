@@ -21,9 +21,9 @@ const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xn
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
 const syncStateKey = "syncStateV20";
-const connectorBuildId = "2026-08-31T10:10Z-video-poster-link-fix";
-const connectorRelease = "1.3.34";
-const connectorPluginVersion = 39;
+const connectorBuildId = "2026-08-31T12:00Z-clickable-body-links";
+const connectorRelease = "1.3.35";
+const connectorPluginVersion = 40;
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
@@ -1304,10 +1304,8 @@ function tweetWantsLinkCardEnrichment(tweet) {
 
 function linkCardSourceUrl(tweet) {
   if (!tweet) return null;
-  if (tweetHasVideoMedia(tweet)) {
-    const article = articleUrlForTweet(tweet);
-    if (article) return article;
-  }
+  const article = articleUrlForTweet(tweet);
+  if (article) return article;
   return (tweet.card && tweet.card.url) || firstExternalUrl(tweet.externalUrls);
 }
 
@@ -1329,7 +1327,8 @@ function isVideoPlaceholderUrl(value) {
   const host = urlHost(value);
   if (host === "t.co") return true;
   if (host === "x.com" || host === "twitter.com") {
-    return /\/video\/\d+/i.test(value) || /\/status\/\d+\/video/i.test(value);
+    return /\/status\/\d+\/(video|photo)\/\d+/i.test(value)
+      || /\/(video|photo)\/\d+/i.test(value);
   }
   return false;
 }
@@ -3222,14 +3221,28 @@ function inlineMediaFallback(media) {
 function tweetBodyText(tweet) {
   let text = tweet && tweet.text ? tweet.text : "";
   text = stripLeadingReplyMentions(text, tweet);
-  const card = linkCardForTweet(tweet);
+  // ponytail: keep external article URLs in body so <a> stays clickable in detail
+  // (LinkAttachment is timeline-only). Only strip media/t.co placeholders.
   const hidden = dedupeStrings([
-    ...(card && card.hiddenUrls ? card.hiddenUrls : []),
-    ...(tweet.hiddenUrls || []),
+    ...(tweet.hiddenUrls || []).filter(url => isMediaPlaceholderUrl(url)),
     ...(tweetHasMedia(tweet) || tweet._mediaLookup ? placeholderUrlsFromTweetText(text) : [])
   ]);
   if (hidden.length > 0) text = textWithoutCardUrl(text, hidden);
-  return text;
+
+  // Expand leftover t.co placeholders to the article URL so linkify can emit <a>
+  const article = articleUrlForTweet(tweet);
+  if (article && /(?:https?:\/\/)?t\.co\/\w+/i.test(text)) {
+    text = text
+      .replace(/https?:\/\/t\.co\/\w+/gi, article)
+      .replace(/(?<![/\w])t\.co\/\w+/gi, article);
+  }
+  return String(text || "").replace(/[ \t]+$/gm, "");
+}
+
+function isMediaPlaceholderUrl(value) {
+  if (!value) return false;
+  if (/t\.co\//i.test(String(value))) return true;
+  return isVideoPlaceholderUrl(value);
 }
 
 function trimBodyText(value) {
@@ -3380,16 +3393,16 @@ function linkCardForTweet(tweet) {
   const card = tweet.card || {};
   const url = linkCardSourceUrl(tweet);
   if (!isExternalWebUrl(url)) return null;
-  if (hasRenderableMedia(tweet) && !cardHasMetadata({ ...card, url })) return null;
 
+  const hasMeta = cardHasMetadata({ ...card, url });
   const hasXCard = Boolean(card.url);
 
   return {
     url,
-    type: hasXCard ? (card.type || "website") : "",
+    type: hasXCard || hasMeta ? (card.type || "website") : "website",
     title: card.title || "",
     subtitle: card.subtitle || "",
-    siteName: hasXCard ? (card.siteName || urlHost(url) || "") : "",
+    siteName: card.siteName || urlHost(url) || "",
     authorName: card.authorName || "",
     image: card.image || null,
     aspectSize: card.aspectSize || null,
@@ -3635,8 +3648,10 @@ function tweetActions(tweet) {
   if (engagement.unrepost) actions.unrepost = engagement.unrepost;
 
   const card = linkCardForTweet(tweet);
-  const openUrl = (card && card.url) || (tweetHasVideoMedia(tweet) ? articleUrlForTweet(tweet) : null);
-  if (openUrl) {
+  const openUrl = (card && card.url)
+    || articleUrlForTweet(tweet)
+    || firstExternalUrl(tweet.externalUrls);
+  if (isExternalWebUrl(openUrl)) {
     actions.openLink = JSON.stringify({ url: openUrl });
   }
 
@@ -4519,7 +4534,7 @@ function linkifiedText(value) {
     if (match[1]) {
       const parts = splitTrailingUrlPunctuation(match[1]);
       if (isInternalPostUrl(parts.url)) {
-        // ponytail: skip t.co/x.com placeholders so Loom does not auto-build empty link cards
+        // omit bare t.co / x.com status placeholders; external targets are expanded earlier
       }
       else if (isExternalWebUrl(parts.url)) {
         html += linkedText(parts.url, displayUrl(parts.url));
@@ -4549,7 +4564,10 @@ function linkifiedText(value) {
 }
 
 function linkedText(url, label) {
-  return `<a href="${escapeAttribute(url)}">${escapeHtml(label)}</a>`;
+  // Keep visible label close to the destination URL so timeline previews that
+  // flatten anchors still look like a link, and detail WebKit stays clickable.
+  const text = label || displayUrl(url) || url;
+  return `<a href="${escapeAttribute(url)}">${escapeHtml(text)}</a>`;
 }
 
 function splitTrailingUrlPunctuation(value) {
