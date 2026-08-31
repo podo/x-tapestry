@@ -27,9 +27,9 @@ const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xn
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
 const syncStateKey = "syncStateV20";
-const connectorBuildId = "2026-08-31T21:25Z-card-order-meta-body";
-const connectorRelease = "1.4.4";
-const connectorPluginVersion = 55;
+const connectorBuildId = "2026-08-31T21:40Z-drop-meta-host";
+const connectorRelease = "1.4.5";
+const connectorPluginVersion = 58;
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
@@ -349,7 +349,8 @@ function adjustEngagementBodyMetrics(body, actionId) {
   const match = html.match(/<p class="x-meta-metrics">([\s\S]*?)<\/p>/i);
   if (!match) return body;
 
-  const metrics = parseMetricsAnnotation({ text: htmlDecode(match[1]) });
+  const inner = String(match[1] || "").replace(/<\/?small>/gi, "");
+  const metrics = parseMetricsAnnotation({ text: htmlDecode(inner) });
   if (!metrics) return body;
 
   if (actionId === "like") metrics.likes += 1;
@@ -362,7 +363,7 @@ function adjustEngagementBodyMetrics(body, actionId) {
   if (!nextText) {
     return html.replace(match[0], "");
   }
-  return html.replace(match[0], `<p class="x-meta-metrics">${escapeHtml(nextText)}</p>`);
+  return html.replace(match[0], metricsMetaHtml(nextText));
 }
 
 function adjustEngagementAnnotations(annotations, actionId) {
@@ -3762,8 +3763,8 @@ function tweetAnnotations(tweet) {
   // Loom renders native annotations above Service/Author. Keep only arrival context there.
   if (tweet.repostedByUsername || tweet.repostedByName) {
     const text = tweet.repostedByUsername
-      ? `@${tweet.repostedByUsername} Reposted`
-      : `${tweet.repostedByName} Reposted`;
+      ? `Reposted by @${tweet.repostedByUsername}`
+      : `Reposted by ${tweet.repostedByName}`;
     const annotation = Annotation.createWithText(text);
     if (tweet.repostedByAvatar) annotation.icon = tweet.repostedByAvatar;
     if (tweet.repostedByUsername) annotation.uri = `https://x.com/${tweet.repostedByUsername}`;
@@ -3780,13 +3781,8 @@ function tweetAnnotations(tweet) {
 
 function tweetMetaHtml(tweet) {
   const blocks = [];
-  ensureTweetExternalUrls(tweet);
-  const article = articleUrlForTweet(tweet);
-  if (isExternalWebUrl(article)) {
-    const label = urlHost(article) || article;
-    blocks.push(`<p class="x-meta-host">${linkedText(article, label)}</p>`);
-  }
-
+  // Article host is not duplicated here: caption keeps clickable <a> and LinkAttachment
+  // covers timeline cards. Only engagement metrics belong under Author.
   if (showMetrics()) {
     const metrics = {
       replies: finiteNumber(tweet.replies),
@@ -3797,10 +3793,15 @@ function tweetMetaHtml(tweet) {
       hasViews: finiteNumber(tweet.views) > 0
     };
     const text = metricsTextFromCounts(metrics);
-    if (text) blocks.push(`<p class="x-meta-metrics">${escapeHtml(text)}</p>`);
+    if (text) blocks.push(metricsMetaHtml(text));
   }
 
   return blocks.join("");
+}
+
+function metricsMetaHtml(text) {
+  // <small> matches Loom annotation chrome size (e.g. "Reply to @…").
+  return `<p class="x-meta-metrics"><small>${escapeHtml(text)}</small></p>`;
 }
 
 function tweetAttachments(tweet) {

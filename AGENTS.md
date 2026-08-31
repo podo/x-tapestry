@@ -10,7 +10,7 @@
 - Auth UI/credentials: `auth_token` + `ct0` only—do not expose or require a raw Cookie Header field.
 - Feed display names use the `X · …` pattern (e.g. `X · Following Feed`).
 - Chronological thread ordering applies only when opening a thread via the thread action icon—not for ordinary item/detail navigation.
-- Retweet chrome: omit the small annotation avatar/@handle on non-retweets; for retweets, annotation is the retweeter and the main `Identity` is the original author.
+- Retweet chrome: omit the small annotation avatar/@handle on non-retweets; for retweets, annotation is `Reposted by @reposter` and the main `Identity` is the original author.
 
 ## Learned Workspace Facts
 
