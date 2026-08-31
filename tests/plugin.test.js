@@ -448,8 +448,9 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 41);
-  assert.match(source, /connectorBuildId = "2026-08-31T12:20Z-full-url-anchor-text"/);
+  assert.strictEqual(pluginConfig.version, 46);
+  assert.match(source, /connectorBuildId = "2026-08-31T16:25Z-url-fallback-split-links"/);
+  assert.strictEqual(pluginConfig.default_color, "slate");
   assert.match(source, /videoPreviewHtml/);
   assert.match(source, /embedTweetMediaThumbnails/);
   assert.match(source, /mediaFromFxTwitterStatus/);
@@ -516,8 +517,9 @@ async function run() {
   const item = context.results[0];
   assert.strictEqual(item.uri, "https://x.com/openai/status/1950000000000000001");
   assert.strictEqual(item.date.toISOString(), "2026-08-28T08:00:00.000Z");
-  assert.match(item.body, /Hello &lt;world&gt;<br>/);
+  assert.match(item.body, /Hello &lt;world&gt;/);
   assert.doesNotMatch(item.body, /<world>/);
+  assert.match(item.body, /<p>Hello &lt;world&gt;<\/p><p><a href="https:\/\/example\.com\/article">/);
   assert.match(item.body, /example\.com\/article/);
   assert.doesNotMatch(item.body, /Open on X/);
   assert.strictEqual(item.author.name, "OpenAI");
@@ -540,20 +542,39 @@ async function run() {
     tweetId: "1950000000000000001",
     url: "https://x.com/openai/status/1950000000000000001"
   });
-  assert.match(item.actions._connectorBuild, /2026-08-31T12:20Z-full-url-anchor-text@plugin41@1.3.36/);
+  assert.match(item.actions._connectorBuild, /2026-08-31T16:25Z-url-fallback-split-links@plugin46@1.3.41/);
   assert.ok(item.actions._timelineAvatarRaw);
   assert.match(item.actions._authorAvatarInput, /^data:\d+$/);
   assert.match(item.actions._authorAvatarAssigned, /^data:\d+$/);
   assert.match(item.actions._authorAvatarLookup, /^(timeline|profile)\+embed$/);
-  assert.match(item.body, /<!-- local\.x\.timeline 2026-08-31T12:20Z-full-url-anchor-text@plugin41@1.3.36 -->/);
+  assert.match(item.body, /<!-- local\.x\.timeline 2026-08-31T16:25Z-url-fallback-split-links@plugin46@1.3.41 -->/);
+  assert.ok(Number(item.actions._bodyAnchorCount) >= 1);
+  assert.ok(Number(item.actions._externalUrlCount) >= 1);
+  assert.match(item.actions._urlApi, /^(ok|missing)$/);
   assert.strictEqual(item.attachments[0].url, "https://pbs.twimg.com/media/a.jpg");
   assert.strictEqual(item.attachments[0].mimeType, "image/jpeg");
   assert.strictEqual(item.attachments[0].text, "Alt text");
   assert.strictEqual(item.attachments[0].aspectSize.width, 1200);
   assert.strictEqual(item.attachments[0].aspectSize.height, 800);
-  assert.match(item.annotations[0].text, /4 replies/);
-  assert.match(item.annotations[0].text, /12 likes/);
-  assert.match(item.annotations[0].text, /1,234 views/);
+  const articleLink = item.attachments.find(attachment => attachment.kind === "link");
+  assert.ok(articleLink, "expected LinkAttachment alongside media");
+  assert.strictEqual(articleLink.url, "https://example.com/article");
+  assert.ok(articleLink.title, "link card needs a visible title");
+  assert.ok(
+    item.annotations.some(annotation => annotation.uri === "https://example.com/article"),
+    "expected tappable link annotation"
+  );
+  assert.ok(
+    item.annotations.some(annotation => (
+      annotation.text === "@openai" && annotation.uri === "https://x.com/openai"
+    )),
+    "expected tappable author annotation"
+  );
+  assert.match(item.author.uri, /https:\/\/x\.com\/openai/);
+  assert.match(item.body, /href="https:\/\/example\.com\/article"/);
+  assert.match(item.annotations.find(annotation => /4 replies/.test(annotation.text)).text, /4 replies/);
+  assert.match(item.annotations.find(annotation => /4 replies/.test(annotation.text)).text, /12 likes/);
+  assert.match(item.annotations.find(annotation => /4 replies/.test(annotation.text)).text, /1,234 views/);
 
   const inlineFallback = makeContext({
     MediaAttachment: undefined,
@@ -690,9 +711,9 @@ async function run() {
   assert.strictEqual(following.results[0].attachments[0].image, "https://example.com/home.jpg");
   assert.strictEqual(following.results[0].attachments[0].aspectSize.width, 1200);
   assert.strictEqual(following.results[0].attachments[0].aspectSize.height, 675);
-  assert.strictEqual(
+  assert.match(
     bodyWithoutConnectorStamp(following.results[0].body),
-    '<p>Read <a href="https://example.com/home">https://example.com/home</a></p>'
+    /^<p>Read<\/p><p><a href="https:\/\/example\.com\/home">https:\/\/example\.com\/home<\/a><\/p>$/
   );
   const homeLoadApi = apiCalls(following, "HomeLatestTimeline").pop();
   const homeLoadVariables = graphqlVariables(homeLoadApi);
@@ -750,9 +771,9 @@ async function run() {
   assert.strictEqual(linkCard.results[0].attachments[0].authorName, "Example Author");
   assert.match(linkCard.results[0].attachments[0].image, /^data:image\/jpeg;base64,/);
   assert.strictEqual(linkCard.results[0].attachments[0].aspectSize.width, 640);
-  assert.strictEqual(
+  assert.match(
     bodyWithoutConnectorStamp(linkCard.results[0].body),
-    '<p>Read this<br><a href="https://example.com/card">https://example.com/card</a></p>'
+    /^<p>Read this<\/p><p><a href="https:\/\/example\.com\/card">https:\/\/example\.com\/card<\/a><\/p>$/
   );
 
   const tweetCard = makeContext({
@@ -787,9 +808,9 @@ async function run() {
   assert.strictEqual(tweetCard.results[0].attachments[0].subtitle, "Tweet card summary");
   assert.strictEqual(tweetCard.results[0].attachments[0].siteName, "Tweet Cards");
   assert.match(tweetCard.results[0].attachments[0].image, /^data:image\/jpeg;base64,/);
-  assert.strictEqual(
+  assert.match(
     bodyWithoutConnectorStamp(tweetCard.results[0].body),
-    '<p>Read tweet card <a href="https://example.com/tweet-card">https://example.com/tweet-card</a></p>'
+    /^<p>Read tweet card<\/p><p><a href="https:\/\/example\.com\/tweet-card">https:\/\/example\.com\/tweet-card<\/a><\/p>$/
   );
 
   const unifiedCardJson = {
@@ -846,9 +867,9 @@ async function run() {
   assert.strictEqual(unifiedCard.results[0].attachments[0].siteName, "Example Unified");
   assert.match(unifiedCard.results[0].attachments[0].image, /^data:image\/jpeg;base64,/);
   assert.strictEqual(unifiedCard.results[0].attachments[0].aspectSize.width, 1200);
-  assert.strictEqual(
+  assert.match(
     bodyWithoutConnectorStamp(unifiedCard.results[0].body),
-    '<p>Unified <a href="https://example.com/unified">https://example.com/unified</a></p>'
+    /^<p>Unified<\/p><p><a href="https:\/\/example\.com\/unified">https:\/\/example\.com\/unified<\/a><\/p>$/
   );
 
   const multiLinkCard = makeContext({
@@ -910,9 +931,9 @@ async function run() {
   assert.strictEqual(playerCard.results[0].attachments[0].title, "Player title");
   assert.strictEqual(playerCard.results[0].attachments[0].subtitle, "Player summary");
   assert.strictEqual(playerCard.results[0].attachments[0].aspectSize.height, 720);
-  assert.strictEqual(
+  assert.match(
     bodyWithoutConnectorStamp(playerCard.results[0].body),
-    '<p>Watch this <a href="https://video.example.com/watch/1">https://video.example.com/watch/1</a></p>'
+    /^<p>Watch this<\/p><p><a href="https:\/\/video\.example\.com\/watch\/1">https:\/\/video\.example\.com\/watch\/1<\/a><\/p>$/
   );
 
   const urlOnlyCard = makeContext({
@@ -992,9 +1013,9 @@ async function run() {
   assert.strictEqual(previewAttachment.image, "https://example.com/preview.jpg");
   assert.strictEqual(previewAttachment.aspectSize.width, 1200);
   assert.strictEqual(previewAttachment.aspectSize.height, 630);
-  assert.strictEqual(
+  assert.match(
     bodyWithoutConnectorStamp(unfurled.results[0].body),
-    '<p>Read <a href="https://example.com/preview">https://example.com/preview</a></p>'
+    /^<p>Read<\/p><p><a href="https:\/\/example\.com\/preview">https:\/\/example\.com\/preview<\/a><\/p>$/
   );
   const previewCall = unfurled._calls.find(call => call.url === "https://example.com/preview");
   assert.ok(previewCall, "missing link preview should fetch the expanded URL");
@@ -1178,7 +1199,7 @@ async function run() {
   assert.strictEqual(modernNested.results[0].author.name, "Nested User");
   assert.strictEqual(modernNested.results[0].author.username, "@nesteduser");
   assert.match(modernNested.results[0].author.avatar, /^data:image\/jpeg;base64,/);
-  assert.match(bodyWithoutConnectorStamp(modernNested.results[0].body), /^<p>Nested video <a href="https:\/\/example.com\/nested">https:\/\/example.com\/nested<\/a><\/p><p><img src="data:image\/jpeg;base64,/);
+  assert.match(bodyWithoutConnectorStamp(modernNested.results[0].body), /^<p>Nested video<\/p><p><a href="https:\/\/example\.com\/nested">https:\/\/example\.com\/nested<\/a><\/p><p><img src="data:image\/jpeg;base64,/);
   assert.strictEqual(modernNested.results[0].attachments[0].url, "https://video.twimg.com/nested-high.mp4");
   assert.match(modernNested.results[0].attachments[0].thumbnail, /^data:image\/jpeg;base64,/);
   assert.strictEqual(modernNested.results[0].attachments[0].aspectSize.width, 1920);
@@ -1224,9 +1245,9 @@ async function run() {
   vm.runInContext("load()", nestedEntityContext);
   await settle();
   assert.ifError(nestedEntityContext.error);
-  assert.strictEqual(
+  assert.match(
     bodyWithoutConnectorStamp(nestedEntityContext.results[0].body),
-    '<p>Details entity link <a href="https://example.org/details">https://example.org/details</a></p>'
+    /^<p>Details entity link<\/p><p><a href="https:\/\/example\.org\/details">https:\/\/example\.org\/details<\/a><\/p>$/
   );
   assert.strictEqual(nestedEntityContext.results[0].attachments[0].kind, "link");
   assert.strictEqual(nestedEntityContext.results[0].attachments[0].url, "https://example.org/details");
@@ -1666,7 +1687,7 @@ async function run() {
   assert.match(replySensitive.results[0].body, /href="https:\/\/x\.com\/sama">@sama<\/a>/);
   assert.match(replySensitive.results[0].body, /href="https:\/\/x\.com\/hashtag\/AI">#AI<\/a>/);
   assert.match(replySensitive.results[0].body, /href="https:\/\/x\.com\/search\?q=%24OPENAI">\$OPENAI<\/a>/);
-  assert.strictEqual(replySensitive.results[0].annotations[0].text, "Reply to @sama");
+  assert.strictEqual(replySensitive.results[0].annotations.find(a => /^Reply/.test(a.text)).text, "Reply to @sama");
 
   const replyMentions = makeContext({
     include_replies: "on",
@@ -1686,7 +1707,7 @@ async function run() {
   assert.match(replyMentions.results[0].body, /Users may not, but for audit purposes/);
   assert.doesNotMatch(replyMentions.results[0].body, /@ndrewpignanelli/);
   assert.doesNotMatch(replyMentions.results[0].body, /@kayacancode/);
-  assert.strictEqual(replyMentions.results[0].annotations[0].text, "Reply to @ndrewpignanelli");
+  assert.strictEqual(replyMentions.results[0].annotations.find(a => /^Reply/.test(a.text)).text, "Reply to @ndrewpignanelli");
 
   const repost = makeContext({
     include_retweets: "on",
@@ -1715,9 +1736,9 @@ async function run() {
   assert.ifError(repost.error);
   assert.strictEqual(repost.results[0].uri, "https://x.com/sama/status/1950000000000000013");
   assert.strictEqual(repost.results[0].date.toISOString(), "2026-08-29T08:00:00.000Z");
-  assert.strictEqual(repost.results[0].annotations[0].text, "@podo Reposted");
-  assert.match(repost.results[0].annotations[0].icon, /^data:image\/jpeg;base64,/);
-  assert.strictEqual(repost.results[0].annotations[0].uri, "https://x.com/podo");
+  assert.strictEqual(repost.results[0].annotations.find(a => /Reposted/.test(a.text)).text, "@podo Reposted");
+  assert.match(repost.results[0].annotations.find(a => /Reposted/.test(a.text)).icon, /^data:image\/jpeg;base64,/);
+  assert.strictEqual(repost.results[0].annotations.find(a => /Reposted/.test(a.text)).uri, "https://x.com/podo");
 
   const threadContext = makeContext({
     threadTimeline: tweetDetailBody([
@@ -1823,7 +1844,7 @@ async function run() {
     source_mode: "Search Query",
     x_sources: "from:openai"
   });
-  let attempts = 0;
+  let searchAttempts = 0;
   retry.sendRequest = async (url, method, parameters, headers, fullResponse) => {
     retry._calls.push({ url, method, parameters, headers, fullResponse });
     if (url === "https://x.com/") return makeHomeHtml();
@@ -1844,16 +1865,22 @@ async function run() {
     if (/^https?:\/\//.test(String(url)) && !String(url).includes("x.com/") && !String(url).includes("api.fxtwitter.com/")) {
       return "<html></html>";
     }
-    attempts += 1;
-    if (attempts === 1) {
-      return JSON.stringify({ errors: [{ code: 344, message: "You have reached your daily limit" }] });
+    if (graphqlAction(url) === "SearchTimeline") {
+      searchAttempts += 1;
+      if (searchAttempts === 1) {
+        return JSON.stringify({ errors: [{ code: 344, message: "You have reached your daily limit" }] });
+      }
+      return JSON.stringify(retry.timeline);
+    }
+    if (graphqlAction(url) === "TweetDetail") {
+      return JSON.stringify({ data: { tweetResult: { result: tweetResult() } } });
     }
     return JSON.stringify(retry.timeline);
   };
   vm.runInContext("load()", retry);
   await settle();
   assert.ifError(retry.error);
-  assert.strictEqual(attempts, 2);
+  assert.strictEqual(searchAttempts, 2);
 
   const profileRestFallback = makeContext({
     timeline: timelineBody([
@@ -2356,13 +2383,81 @@ async function run() {
     reutersVideo.results[0].attachments[1].title,
     "Drone strike on ammunition depot ravages Kyiv suburb"
   );
-  assert.match(bodyWithoutConnectorStamp(reutersVideo.results[0].body), /^<p>Liudmyla Polianychko walks through her shattered home outside Kyiv <a href="https:\/\/reut\.rs\/4zOs8v9">https:\/\/reut\.rs\/4zOs8v9<\/a><\/p><p><img src="(?:data:image\/jpeg;base64,|https:\/\/pbs\.twimg\.com\/)/);
+  assert.match(bodyWithoutConnectorStamp(reutersVideo.results[0].body), /^<p>Liudmyla Polianychko walks through her shattered home outside Kyiv<\/p><p><a href="https:\/\/reut\.rs\/4zOs8v9">https:\/\/reut\.rs\/4zOs8v9<\/a><\/p><p><img src="(?:data:image\/jpeg;base64,|https:\/\/pbs\.twimg\.com\/)/);
   assert.doesNotMatch(reutersVideo.results[0].body, /t\.co\/fxZNHuUTYx/);
   assert.match(reutersVideo.results[0].body, /href="https:\/\/reut\.rs\/4zOs8v9"/);
   assert.strictEqual(reutersVideo.results[0].actions._linkCardLookup, "fxtwitter");
   assert.deepStrictEqual(JSON.parse(reutersVideo.results[0].actions.openLink), {
     url: "https://reut.rs/4zOs8v9"
   });
+  assert.ok(Number(reutersVideo.results[0].actions._bodyAnchorCount) >= 1);
+  assert.ok(Number(reutersVideo.results[0].actions._externalUrlCount) >= 1);
+  assert.match(reutersVideo.results[0].actions._urlApi, /^(ok|missing)$/);
+
+  // Caption + media + external URL with no OG image → titled card borrows photo.
+  const mediaLinkFill = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000099",
+        username: "Reuters",
+        name: "Reuters",
+        fullText: "Caption with article https://reut.rs/3JQ6UrD",
+        legacy: {
+          entities: {
+            urls: [
+              urlEntity("https://t.co/abc", "https://reut.rs/3JQ6UrD", "reut.rs/3JQ6UrD")
+            ]
+          },
+          extended_entities: {
+            media: [
+              {
+                id_str: "99",
+                type: "photo",
+                media_url_https: "https://pbs.twimg.com/media/fill.jpg",
+                original_info: { width: 800, height: 600 },
+                sizes: { large: { w: 800, h: 600 } }
+              }
+            ]
+          }
+        }
+      })
+    ])
+  });
+  const mediaLinkFillRequest = mediaLinkFill.sendRequest;
+  mediaLinkFill.sendRequest = async (url, method, parameters, headers, fullResponse) => {
+    if (String(url).includes("api.fxtwitter.com/")) {
+      const payload = JSON.stringify({ code: 200, tweet: {} });
+      return fullResponse
+        ? JSON.stringify({ status: 200, headers: { "content-type": "application/json" }, body: payload })
+        : payload;
+    }
+    if (graphqlAction(url) === "TweetDetail") {
+      return JSON.stringify({ data: { threaded_conversation_with_injections_v2: { instructions: [] } } });
+    }
+    if (String(url).includes("reut.rs") || String(url).includes("example.com")) {
+      const payload = "<html><head></head><body>blocked</body></html>";
+      return fullResponse
+        ? JSON.stringify({ status: 200, headers: { "content-type": "text/html" }, body: payload })
+        : payload;
+    }
+    return mediaLinkFillRequest(url, method, parameters, headers, fullResponse);
+  };
+  vm.runInContext("load()", mediaLinkFill);
+  await settle();
+  assert.ifError(mediaLinkFill.error);
+  const filled = mediaLinkFill.results[0];
+  assert.match(
+    bodyWithoutConnectorStamp(filled.body),
+    /^<p>Caption with article<\/p><p><a href="https:\/\/reut\.rs\/3JQ6UrD">https:\/\/reut\.rs\/3JQ6UrD<\/a><\/p>/
+  );
+  assert.ok(Number(filled.actions._bodyAnchorCount) >= 1);
+  assert.ok(Number(filled.actions._externalUrlCount) >= 1);
+  assert.deepStrictEqual(JSON.parse(filled.actions.openLink), { url: "https://reut.rs/3JQ6UrD" });
+  const filledCard = filled.attachments.find(attachment => attachment.kind === "link");
+  assert.ok(filledCard, "expected link card alongside media");
+  assert.strictEqual(filledCard.url, "https://reut.rs/3JQ6UrD");
+  assert.ok(filledCard.title, "media+URL cards need a visible title");
+  assert.ok(filledCard.image, "empty OG image should borrow media photo/poster");
 
   const roboticHandVideo = makeContext({
     timeline: timelineBody([
@@ -2493,6 +2588,151 @@ async function run() {
   assert.deepStrictEqual(JSON.parse(transcriptLink.results[0].actions.openLink), {
     url: "https://thetranscript.substack.com/subscribe"
   });
+
+  const emojiGluedDiscord = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000054",
+        username: "opendsgn",
+        name: "Open Design",
+        fullText: "Join us 👉https://discord.gg/opendsgn",
+        legacy: {
+          entities: { urls: [] },
+          extended_entities: { media: [] }
+        }
+      })
+    ])
+  });
+  vm.runInContext("load()", emojiGluedDiscord);
+  await settle();
+  assert.ifError(emojiGluedDiscord.error);
+  assert.ok(emojiGluedDiscord.results && emojiGluedDiscord.results[0], "emoji-glued discord item missing");
+  assert.match(
+    emojiGluedDiscord.results[0].body,
+    /href="https:\/\/discord\.gg\/opendsgn"/
+  );
+  assert.match(
+    emojiGluedDiscord.results[0].body,
+    />https:\/\/discord\.gg\/opendsgn</
+  );
+  assert.ok(
+    (emojiGluedDiscord.results[0].attachments || []).some(attachment => (
+      attachment.kind === "link" && attachment.url === "https://discord.gg/opendsgn"
+    )),
+    "expected LinkAttachment for emoji-glued discord URL"
+  );
+  assert.deepStrictEqual(JSON.parse(emojiGluedDiscord.results[0].actions.openLink), {
+    url: "https://discord.gg/opendsgn"
+  });
+  assert.notStrictEqual(emojiGluedDiscord.results[0].actions._linkCardInput, "none");
+
+  const slashCommentLink = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000055",
+        username: "kotecinho",
+        name: "Kote",
+        fullText: "// https://tecniq.co.uk/bespoke-project-q40-defender-by-tecniq/",
+        legacy: {
+          entities: {
+            urls: [
+              {
+                url: "https://t.co/tecniq",
+                expanded_url: "https://tecniq.co.uk/bespoke-project-q40-defender-by-tecniq/",
+                display_url: "tecniq.co.uk/bespoke-project-q40-defender-by-tecniq/"
+              }
+            ]
+          },
+          extended_entities: {
+            media: [
+              {
+                type: "photo",
+                media_url_https: "https://pbs.twimg.com/media/tecniq.jpg",
+                original_info: { width: 1200, height: 800 },
+                ext_alt_text: "Dashboard"
+              }
+            ]
+          }
+        }
+      })
+    ])
+  });
+  vm.runInContext("load()", slashCommentLink);
+  await settle();
+  assert.ifError(slashCommentLink.error);
+  const slashItem = slashCommentLink.results[0];
+  assert.match(slashItem.body, /href="https:\/\/tecniq\.co\.uk\/bespoke-project-q40-defender-by-tecniq\/"/);
+  assert.ok(slashItem.attachments.some(attachment => (
+    attachment.kind === "link"
+    && attachment.url === "https://tecniq.co.uk/bespoke-project-q40-defender-by-tecniq/"
+    && attachment.title
+  )));
+  assert.ok(slashItem.annotations.some(annotation => (
+    annotation.uri === "https://tecniq.co.uk/bespoke-project-q40-defender-by-tecniq/"
+  )));
+  assert.deepStrictEqual(JSON.parse(slashItem.actions.openLink), {
+    url: "https://tecniq.co.uk/bespoke-project-q40-defender-by-tecniq/"
+  });
+
+  const httpsWwwNewYorker = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "2094376521268117649",
+        username: "NewYorker",
+        name: "The New Yorker",
+        fullText: "A father wanted to vaccinate his children. Their mother didn’t. Then the kids got sick. https://www.newyorker.com/magazine/2026/09/07/the-maha-custody-battle?utm_campaign=dhtwitter&utm_content=%3Cmedia_url%3E&utm_medium=social&utm_source=twitter",
+        legacy: {
+          entities: { urls: [] },
+          extended_entities: { media: [] }
+        }
+      })
+    ])
+  });
+  vm.runInContext("load()", httpsWwwNewYorker);
+  await settle();
+  assert.ifError(httpsWwwNewYorker.error);
+  const nyItem = httpsWwwNewYorker.results[0];
+  assert.doesNotMatch(nyItem.body, /https:\/\/\s+www\./);
+  assert.match(
+    nyItem.body,
+    /href="https:\/\/www\.newyorker\.com\/magazine\/2026\/09\/07\/the-maha-custody-battle\?[^"]+"/
+  );
+  assert.ok(nyItem.attachments.some(attachment => (
+    attachment.kind === "link"
+    && /^https:\/\/www\.newyorker\.com\//.test(attachment.url)
+  )));
+  assert.ok(nyItem.actions.openLink);
+  assert.ok(nyItem.annotations.some(annotation => (
+    annotation.uri && annotation.uri.indexOf("newyorker.com") >= 0
+  )));
+
+  const xArticleUrl = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000056",
+        username: "jeff_weinstein",
+        name: "Jeff Weinstein",
+        fullText: "Read more https://x.com/i/article/2094340929800769536",
+        legacy: {
+          entities: { urls: [] },
+          extended_entities: { media: [] }
+        }
+      })
+    ])
+  });
+  vm.runInContext("load()", xArticleUrl);
+  await settle();
+  assert.ifError(xArticleUrl.error);
+  assert.match(
+    xArticleUrl.results[0].body,
+    /href="https:\/\/x\.com\/i\/article\/2094340929800769536"/
+  );
+  assert.ok(
+    xArticleUrl.results[0].annotations.some(annotation => (
+      annotation.text === "@jeff_weinstein"
+      && annotation.uri === "https://x.com/jeff_weinstein"
+    ))
+  );
 
   const encodedAmpersand = makeContext({
     timeline: timelineBody([

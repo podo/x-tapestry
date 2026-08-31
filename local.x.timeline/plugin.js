@@ -21,9 +21,9 @@ const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xn
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
 const syncStateKey = "syncStateV20";
-const connectorBuildId = "2026-08-31T12:20Z-full-url-anchor-text";
-const connectorRelease = "1.3.36";
-const connectorPluginVersion = 41;
+const connectorBuildId = "2026-08-31T16:25Z-url-fallback-split-links";
+const connectorRelease = "1.3.41";
+const connectorPluginVersion = 46;
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
@@ -144,11 +144,16 @@ function attachAvatarDiagnostics(actions, tweet, identity) {
   return actions;
 }
 
-function attachItemDiagnostics(actions, tweet, identity) {
+function attachItemDiagnostics(actions, tweet, identity, bodyHtml) {
   attachAvatarDiagnostics(actions, tweet, identity);
   if (tweet && tweet._linkCardLookup) actions._linkCardLookup = tweet._linkCardLookup;
   actions._linkCardInput = describeLinkCardState(tweet);
   if (tweet && tweet._mediaLookup) actions._mediaLookup = tweet._mediaLookup;
+  const html = String(bodyHtml || "");
+  actions._bodyAnchorCount = String((html.match(/<a\s/gi) || []).length);
+  ensureTweetExternalUrls(tweet);
+  actions._externalUrlCount = String((tweet.externalUrls || []).length);
+  actions._urlApi = urlApiStatus();
   return actions;
 }
 
@@ -989,11 +994,41 @@ function ensureTweetExternalUrls(tweet) {
 
 function externalUrlsFromText(text) {
   const urls = [];
-  for (const match of String(text || "").match(/https?:\/\/[^\s<]+/gi) || []) {
+  const value = normalizeTextForUrlMatching(text);
+  for (const match of value.match(/https?:\/\/[^\s<]+/gi) || []) {
     const parts = splitTrailingUrlPunctuation(match);
-    if (isExternalWebUrl(parts.url)) urls.push(parts.url);
+    const url = canonicalizeHarvestedUrl(parts.url);
+    if (isExternalWebUrl(url)) urls.push(url);
+  }
+  for (const match of value.match(/(?:^|[\s(])((?:www\.)[^\s<]+)/gi) || []) {
+    const bare = match.replace(/^(?:[\s(])/, "");
+    const parts = splitTrailingUrlPunctuation(bare);
+    const url = canonicalizeHarvestedUrl(parts.url);
+    if (isExternalWebUrl(url)) urls.push(url);
   }
   return urls;
+}
+
+function canonicalizeHarvestedUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (/^www\./i.test(raw)) return `https://${raw}`;
+  return raw;
+}
+
+function normalizeTextForUrlMatching(value) {
+  let text = String(value || "");
+  if (typeof text.normalize === "function") text = text.normalize("NFC");
+  // Strip bidi/format/zero-width chars that break URL regexes in Loom/JSC copies.
+  text = text.replace(/[\u200B-\u200D\u2060\uFEFF\u202A-\u202E\u2066-\u2069]/g, "");
+  // Repair `https:// www.` — never leave whitespace inside the scheme/authority.
+  text = text.replace(/(https?:\/\/)\s+/gi, "$1");
+  // ponytail: emoji-glued URLs (`👉https://…`) miss some parsers; insert a break.
+  text = text.replace(/([^\s])(https?:\/\/)/gi, "$1 $2");
+  // Bare www glued to text/emoji — but do NOT split `https://www.`
+  text = text.replace(/([^\s/:])(www\.)/gi, "$1 $2");
+  return text;
 }
 
 function stripMediaPlaceholderUrls(text, tweet) {
@@ -1299,7 +1334,8 @@ function isLinkOnlyTweet(tweet) {
 }
 
 function tweetWantsLinkCardEnrichment(tweet) {
-  return isLinkOnlyTweet(tweet) || Boolean(tweetHasVideoMedia(tweet) && linkCardSourceUrl(tweet));
+  // Any external URL gets a card shell + openLink; metadata enrich is best-effort.
+  return Boolean(isExternalWebUrl(linkCardSourceUrl(tweet)));
 }
 
 function linkCardSourceUrl(tweet) {
@@ -1323,9 +1359,9 @@ function articleUrlForTweet(tweet) {
 }
 
 function isVideoPlaceholderUrl(value) {
-  if (!isWebUrl(value)) return false;
   const host = urlHost(value);
   if (host === "t.co") return true;
+  if (!host && /t\.co\//i.test(String(value || ""))) return true;
   if (host === "x.com" || host === "twitter.com") {
     return /\/status\/\d+\/(video|photo)\/\d+/i.test(value)
       || /\/(video|photo)\/\d+/i.test(value);
@@ -2049,7 +2085,10 @@ function normalizeTweet(rawResult, includeQuoted) {
     || "";
   const text = expandedTweetText(fullText, entities, note, urlMappings);
   const media = extractMedia(result, legacy);
-  const externalUrls = dedupeStrings(extractExternalUrls(urlMappings));
+  const externalUrls = dedupeStrings([
+    ...extractExternalUrls(urlMappings),
+    ...externalUrlsFromText(text)
+  ]);
   const card = extractCard(result, externalUrls, urlMappings);
   const poll = extractPoll(result);
   const quotedRaw = result.quoted_status_result && result.quoted_status_result.result;
@@ -3125,9 +3164,10 @@ function bottomCursor(instructions) {
 
 function tweetToItem(tweet) {
   const item = Item.createWithUriDate(tweet.url, tweet.date || new Date());
-  item.author = tweetIdentity(tweet);
 
-  const body = tweetBody(tweet);
+  let body = tweetBody(tweet);
+  body = forceLinkifyPlainUrlsInHtml(body);
+  armTweetLinksFromBody(tweet, body);
   if (body) item.body = body + connectorDebugBodySuffix();
 
   if (tweet.contentWarning) item.contentWarning = tweet.contentWarning;
@@ -3138,17 +3178,35 @@ function tweetToItem(tweet) {
   const attachments = tweetAttachments(tweet);
   if (attachments.length > 0) item.attachments = attachments;
 
-  item.actions = attachItemDiagnostics(tweetActions(tweet), tweet, item.author);
+  // Assign author last — matches Bluesky/Mastodon and Loom identity quirks.
+  const author = tweetIdentity(tweet);
+  item.author = author;
+  item.actions = attachItemDiagnostics(tweetActions(tweet, body), tweet, author, body);
 
   return item;
+}
+
+function armTweetLinksFromBody(tweet, bodyHtml) {
+  if (!tweet) return;
+  const plain = htmlDecode(String(bodyHtml || "").replace(/<[^>]+>/g, " "));
+  tweet.externalUrls = dedupeStrings([
+    ...(tweet.externalUrls || []),
+    ...externalUrlsFromText(tweet.text),
+    ...externalUrlsFromText(plain)
+  ]);
+  ensureLinkCardShell(tweet);
+  ensureMinimalLinkCard(tweet);
+  fillLinkCardImageFromMedia(tweet);
 }
 
 function tweetBody(tweet) {
   const text = tweetBodyText(tweet);
   const trimmed = trimBodyText(text);
-  let body = trimmed ? `<p>${linkifiedText(trimmed)}</p>` : "";
+  let body = buildSplitLinkBody(trimmed);
   body += videoPreviewHtml(tweet);
   body = scrubMediaPlaceholderUrlsFromBody(body, tweet);
+  body = forceLinkifyPlainUrlsInHtml(body);
+  body += externalLinkBodySuffix(body, tweet);
   if (!inlineMediaFallbackNeeded(tweet)) return body;
 
   const media = tweet.media
@@ -3157,6 +3215,91 @@ function tweetBody(tweet) {
     .filter(Boolean)
     .join("");
   return body + media;
+}
+
+function buildSplitLinkBody(text) {
+  const value = normalizeTextForUrlMatching(htmlDecode(String(text || "")));
+  if (!value) return "";
+
+  const urls = [];
+  let caption = value.replace(/https?:\/\/[^\s<]+/gi, (match) => {
+    const parts = splitTrailingUrlPunctuation(match);
+    const url = canonicalizeHarvestedUrl(parts.url);
+    if (shouldOmitBodyUrl(url)) return "";
+    if (looksLikeHttpUrl(url)) {
+      urls.push(url);
+      return parts.trailing || "";
+    }
+    return match;
+  });
+  caption = String(caption || "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/^\s+|\s+$/g, "");
+
+  const blocks = [];
+  if (caption) blocks.push(`<p>${linkifiedText(caption)}</p>`);
+
+  const seen = {};
+  for (const url of urls) {
+    const key = normalizedUrlForCompare(url) || String(url);
+    if (seen[key]) continue;
+    seen[key] = true;
+    blocks.push(`<p>${linkedText(url, url)}</p>`);
+  }
+
+  if (blocks.length === 0) return `<p>${linkifiedText(value)}</p>`;
+  return blocks.join("");
+}
+
+function forceLinkifyPlainUrlsInHtml(html) {
+  return String(html || "").replace(/https?:\/\/[^\s<]+/gi, (match, offset, full) => {
+    const preceding = full.slice(0, offset);
+    // Already inside an HTML tag (e.g. src="/href=") — leave the attribute alone.
+    if (preceding.lastIndexOf("<") > preceding.lastIndexOf(">")) return match;
+    const lastOpen = preceding.lastIndexOf("<a ");
+    const lastClose = preceding.lastIndexOf("</a>");
+    if (lastOpen > lastClose) return match;
+
+    const parts = splitTrailingUrlPunctuation(match);
+    const url = canonicalizeHarvestedUrl(parts.url);
+    if (shouldOmitBodyUrl(url) || !looksLikeHttpUrl(url)) return match;
+    return linkedText(url, url) + (parts.trailing || "");
+  });
+}
+
+function fillLinkCardImageFromMedia(tweet) {
+  if (!tweet || !tweet.card || !isExternalWebUrl(tweet.card.url)) return;
+  if (tweet.card.image) return;
+
+  const photo = (tweet.media || []).find(item => (
+    item
+    && item.url
+    && (item.type === "photo" || (!item.type && !/video/i.test(String(item.mimeType || ""))))
+  ));
+  const video = primaryVideoMedia(tweet);
+  const image = (photo && photo.url) || videoPosterUrl(video);
+  if (!image) return;
+
+  tweet.card.image = image;
+  if (photo && photo.width > 0 && photo.height > 0) {
+    tweet.card.aspectSize = { width: photo.width, height: photo.height };
+  }
+  else if (video && video.width > 0 && video.height > 0) {
+    tweet.card.aspectSize = { width: video.width, height: video.height };
+  }
+}
+
+function externalLinkBodySuffix(body, tweet) {
+  const url = articleUrlForTweet(tweet) || firstExternalUrl(externalUrlsFromText(
+    htmlDecode(String(body || "").replace(/<[^>]+>/g, " "))
+  ));
+  if (!isExternalWebUrl(url)) return "";
+  const html = String(body || "");
+  const href = escapeAttribute(url);
+  if (html.includes(`href="${href}"`)) return "";
+  const plain = htmlDecode(html.replace(/<[^>]+>/g, " "));
+  if (!plain.includes(url) && !/(?:https?:\/\/)?t\.co\/\w+/i.test(plain)) return "";
+  return `<p><a href="${href}">${escapeHtml(url)}</a></p>`;
 }
 
 function videoPreviewHtml(tweet) {
@@ -3230,13 +3373,14 @@ function tweetBodyText(tweet) {
   if (hidden.length > 0) text = textWithoutCardUrl(text, hidden);
 
   // Expand leftover t.co placeholders to the article URL so linkify can emit <a>
+  ensureTweetExternalUrls(tweet);
   const article = articleUrlForTweet(tweet);
   if (article && /(?:https?:\/\/)?t\.co\/\w+/i.test(text)) {
     text = text
       .replace(/https?:\/\/t\.co\/\w+/gi, article)
       .replace(/(?<![/\w])t\.co\/\w+/gi, article);
   }
-  return String(text || "").replace(/[ \t]+$/gm, "");
+  return normalizeTextForUrlMatching(String(text || "").replace(/[ \t]+$/gm, ""));
 }
 
 function isMediaPlaceholderUrl(value) {
@@ -3276,6 +3420,14 @@ function createIdentity(name, username, avatar, uri) {
   const handle = username || null;
   const profileUri = uri || null;
 
+  if (typeof Identity !== "undefined" && typeof Identity.create === "function") {
+    const identity = Identity.create(name, handle, avatarUrl, profileUri);
+    if (handle) identity.username = handle;
+    if (profileUri) identity.uri = profileUri;
+    if (avatarUrl != null) identity.avatar = avatarUrl;
+    return identity;
+  }
+
   if (typeof Identity === "undefined" || typeof Identity.createWithName !== "function") {
     throw new Error("Loom does not provide Identity.createWithName.");
   }
@@ -3289,6 +3441,15 @@ function createIdentity(name, username, avatar, uri) {
 
 function tweetAnnotations(tweet) {
   const annotations = [];
+
+  // Tappable profile chip (header @username is often plain chrome; Annotation.uri is reliable).
+  if (tweet.authorUsername) {
+    const profile = Annotation.createWithText(`@${tweet.authorUsername}`);
+    profile.uri = `https://x.com/${tweet.authorUsername}`;
+    if (tweet.authorAvatar) profile.icon = tweet.authorAvatar;
+    annotations.push(profile);
+  }
+
   if (tweet.repostedByUsername || tweet.repostedByName) {
     const text = tweet.repostedByUsername
       ? `@${tweet.repostedByUsername} Reposted`
@@ -3300,8 +3461,21 @@ function tweetAnnotations(tweet) {
   }
   if (tweet.isReply) {
     const text = tweet.replyToUsername ? `Reply to @${tweet.replyToUsername}` : "Reply";
-    annotations.push(Annotation.createWithText(text));
+    const reply = Annotation.createWithText(text);
+    if (tweet.replyToUsername) reply.uri = `https://x.com/${tweet.replyToUsername}`;
+    annotations.push(reply);
   }
+
+  // Threads pattern: Annotation.uri is a reliable tap target when body <a> is plain in Loom.
+  ensureTweetExternalUrls(tweet);
+  const article = articleUrlForTweet(tweet);
+  if (isExternalWebUrl(article)) {
+    const label = urlHost(article) || article;
+    const linkAnnotation = Annotation.createWithText(label);
+    linkAnnotation.uri = article;
+    annotations.push(linkAnnotation);
+  }
+
   if (showMetrics()) {
     const details = [];
     if (tweet.replies > 0) details.push(`${formatCount(tweet.replies)} replies`);
@@ -3372,12 +3546,14 @@ function tweetPollAttachment(tweet) {
 }
 
 function tweetLinkAttachment(tweet) {
+  fillLinkCardImageFromMedia(tweet);
   const card = linkCardForTweet(tweet);
   if (!card) return null;
 
   const attachment = LinkAttachment.createWithUrl(card.url);
   if (card.type) attachment.type = card.type;
-  if (card.title) attachment.title = card.title;
+  // Always set a title so Loom shows a tappable link card (URL-only shells were easy to miss).
+  attachment.title = card.title || card.siteName || urlHost(card.url) || card.url;
   if (card.subtitle) attachment.subtitle = card.subtitle;
   if (card.siteName) attachment.siteName = card.siteName;
   if (card.authorName) attachment.authorName = card.authorName;
@@ -3612,7 +3788,6 @@ function quotedTweetAttachment(tweet) {
   if (!tweet.quoted || typeof Item === "undefined") return null;
 
   const quote = Item.createWithUriDate(tweet.quoted.url, tweet.quoted.date || new Date());
-  quote.author = tweetIdentity(tweet.quoted);
 
   const body = tweetBody(tweet.quoted);
   if (body) quote.body = body + connectorDebugBodySuffix();
@@ -3624,12 +3799,15 @@ function quotedTweetAttachment(tweet) {
     if (link) attachments.push(link);
   }
   if (attachments.length > 0) quote.attachments = attachments;
-  quote.actions = attachItemDiagnostics(tweetActions(tweet.quoted), tweet.quoted, quote.author);
+
+  const author = tweetIdentity(tweet.quoted);
+  quote.author = author;
+  quote.actions = attachItemDiagnostics(tweetActions(tweet.quoted, body), tweet.quoted, author, body);
 
   return quote;
 }
 
-function tweetActions(tweet) {
+function tweetActions(tweet, bodyHtml) {
   const actions = {
     _connectorBuild: connectorEntryStamp()
   };
@@ -3647,10 +3825,22 @@ function tweetActions(tweet) {
   if (engagement.repost) actions.repost = engagement.repost;
   if (engagement.unrepost) actions.unrepost = engagement.unrepost;
 
+  const plainBody = htmlDecode(String(bodyHtml || "").replace(/<[^>]+>/g, " "));
+  tweet.externalUrls = dedupeStrings([
+    ...(tweet.externalUrls || []),
+    ...externalUrlsFromText(tweet.text),
+    ...externalUrlsFromText(plainBody)
+  ]);
+  ensureLinkCardShell(tweet);
+  ensureMinimalLinkCard(tweet);
+  fillLinkCardImageFromMedia(tweet);
+
   const card = linkCardForTweet(tweet);
   const openUrl = (card && card.url)
     || articleUrlForTweet(tweet)
-    || firstExternalUrl(tweet.externalUrls);
+    || firstExternalUrl(tweet.externalUrls)
+    || firstExternalUrl(externalUrlsFromText(tweet.text))
+    || firstExternalUrl(externalUrlsFromText(plainBody));
   if (isExternalWebUrl(openUrl)) {
     actions.openLink = JSON.stringify({ url: openUrl });
   }
@@ -4425,35 +4615,60 @@ function binaryStringToBytes(value) {
 }
 
 function isExternalWebUrl(value) {
-  if (!isWebUrl(value)) return false;
+  if (!looksLikeHttpUrl(value) && !isWebUrl(value)) return false;
   const host = urlHost(value);
-  return host && host !== "x.com" && host !== "twitter.com" && host !== "t.co";
+  return Boolean(host && host !== "x.com" && host !== "twitter.com" && host !== "t.co");
 }
 
 function isInternalPostUrl(value) {
-  if (!isWebUrl(value)) return false;
+  if (!looksLikeHttpUrl(value) && !isWebUrl(value)) return false;
   const host = urlHost(value);
   return host === "t.co" || host === "x.com" || host === "twitter.com";
 }
 
+// Only strip media/t.co placeholders from body — keep x.com status/article/profile URLs as <a>.
+function shouldOmitBodyUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return false;
+  const host = urlHost(raw);
+  if (host === "t.co" || /^https?:\/\/t\.co\//i.test(raw) || /^t\.co\//i.test(raw)) return true;
+  if (host === "x.com" || host === "twitter.com") return isVideoPlaceholderUrl(raw);
+  return false;
+}
+
+function urlApiStatus() {
+  return typeof URL !== "undefined" ? "ok" : "missing";
+}
+
+function looksLikeHttpUrl(value) {
+  return /^https?:\/\/[^\s<]+$/i.test(String(value || "").trim());
+}
+
 function isWebUrl(value) {
   if (typeof value !== "string" || !value.trim()) return false;
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
+  if (typeof URL !== "undefined") {
+    try {
+      const url = new URL(value);
+      if (url.protocol === "http:" || url.protocol === "https:") return true;
+    }
+    catch (error) {
+      // Fall through to regex — Loom/JSC can throw on otherwise usable URLs.
+    }
   }
-  catch (error) {
-    return false;
-  }
+  return looksLikeHttpUrl(value);
 }
 
 function urlHost(value) {
-  try {
-    return new URL(value).host.replace(/^www\./, "");
+  if (typeof URL !== "undefined") {
+    try {
+      return new URL(value).host.replace(/^www\./, "");
+    }
+    catch (error) {
+      // Fall through.
+    }
   }
-  catch (error) {
-    return null;
-  }
+  const match = String(value || "").trim().match(/^https?:\/\/([^/:?#]+)/i);
+  return match ? match[1].replace(/^www\./i, "").toLowerCase() : null;
 }
 
 function equivalentWebUrl(left, right) {
@@ -4464,16 +4679,23 @@ function equivalentWebUrl(left, right) {
 
 function normalizedUrlForCompare(value) {
   if (!isWebUrl(value)) return null;
-  try {
-    const url = new URL(value);
-    url.hash = "";
-    url.hostname = url.hostname.toLowerCase();
-    if (url.pathname !== "/") url.pathname = url.pathname.replace(/\/+$/, "");
-    return url.toString();
+  if (typeof URL !== "undefined") {
+    try {
+      const url = new URL(value);
+      url.hash = "";
+      url.hostname = url.hostname.toLowerCase();
+      if (url.pathname !== "/") url.pathname = url.pathname.replace(/\/+$/, "");
+      return url.toString();
+    }
+    catch (error) {
+      // Fall through to string normalize when URL ctor rejects.
+    }
   }
-  catch (error) {
-    return null;
-  }
+  return String(value || "")
+    .trim()
+    .replace(/#.*$/, "")
+    .replace(/\/+$/, "")
+    .toLowerCase() || null;
 }
 
 function textWithoutCardUrl(value, hiddenUrls) {
@@ -4524,62 +4746,40 @@ function urlVariants(value) {
 }
 
 function linkifiedText(value) {
-  const text = htmlDecode(String(value || ""));
-  const regex = /(https?:\/\/[^\s<]+)|(^|[^\w/])@([A-Za-z0-9_]{1,15})\b|(^|[^\w/])#([A-Za-z0-9_]+)\b|(^|[^\w/])\$([A-Za-z][A-Za-z0-9_]{0,9})\b/g;
-  let html = "";
-  let lastIndex = 0;
-  let match;
-  let lastEmittedUrl = null;
-  while ((match = regex.exec(text)) !== null) {
-    const between = text.slice(lastIndex, match.index);
-    if (match[1]) {
-      const parts = splitTrailingUrlPunctuation(match[1]);
-      if (isInternalPostUrl(parts.url)) {
-        // omit bare t.co / x.com status placeholders; external targets are expanded earlier
-        html += escapeHtml(between.replace(/[ \t]+$/g, ""));
-        lastEmittedUrl = null;
-      }
-      else if (isExternalWebUrl(parts.url)) {
-        // ponytail: Loom timeline styles @mentions from <a> labels; use full URL as
-        // visible text so http(s) anchors render/click like mentions (displayUrl alone stays plain).
-        if (lastEmittedUrl && equivalentWebUrl(lastEmittedUrl, parts.url) && /^[\s]*$/.test(between)) {
-          // drop consecutive duplicate destinations (common on X cards)
-        }
-        else {
-          html += escapeHtml(between);
-          html += linkedText(parts.url, parts.url);
-          html += escapeHtml(parts.trailing);
-          lastEmittedUrl = parts.url;
-        }
-      }
-      else {
-        html += escapeHtml(between);
-        html += escapeHtml(parts.url);
-        html += escapeHtml(parts.trailing);
-        lastEmittedUrl = null;
-      }
-    }
-    else if (match[3]) {
-      html += escapeHtml(between);
-      html += escapeHtml(match[2]);
-      html += linkedText(`https://x.com/${match[3]}`, `@${match[3]}`);
-      lastEmittedUrl = null;
-    }
-    else if (match[5]) {
-      html += escapeHtml(between);
-      html += escapeHtml(match[4]);
-      html += linkedText(`https://x.com/hashtag/${encodeURIComponent(match[5])}`, `#${match[5]}`);
-      lastEmittedUrl = null;
-    }
-    else if (match[7]) {
-      html += escapeHtml(between);
-      html += escapeHtml(match[6]);
-      html += linkedText(`https://x.com/search?q=${encodeURIComponent(`$${match[7]}`)}`, `$${match[7]}`);
-      lastEmittedUrl = null;
-    }
-    lastIndex = match.index + match[0].length;
-  }
-  html += escapeHtml(text.slice(lastIndex));
+  // Instagram-style: escape first, then wrap URLs/mentions on the escaped string.
+  const text = normalizeTextForUrlMatching(htmlDecode(String(value || "")));
+  let html = escapeHtml(text);
+
+  // Drop consecutive duplicate URL tokens (common on X cards) before wrapping.
+  html = html.replace(/(https?:\/\/[^\s<]+)(?:\s+\1)+/g, "$1");
+
+  html = html.replace(/https?:\/\/[^\s<]+/g, (match) => {
+    const parts = splitTrailingUrlPunctuation(match);
+    const url = canonicalizeHarvestedUrl(parts.url);
+    if (shouldOmitBodyUrl(url)) return "";
+    // Regex already matched http(s); do not require `new URL()` (Loom/JSC can reject valid URLs).
+    if (!looksLikeHttpUrl(url)) return match;
+    return linkedText(url, url) + (parts.trailing || "");
+  });
+
+  html = html.replace(/(^|[\s(])((?:www\.)[^\s<]+)/g, (match, prefix, bare) => {
+    const parts = splitTrailingUrlPunctuation(bare);
+    const url = canonicalizeHarvestedUrl(parts.url);
+    if (shouldOmitBodyUrl(url) || !looksLikeHttpUrl(url)) return match;
+    return `${prefix}${linkedText(url, url)}${parts.trailing || ""}`;
+  });
+
+  html = html.replace(/(^|[\s(])@([A-Za-z0-9_]{1,15})\b/g, (match, prefix, username) => (
+    `${prefix}${linkedText(`https://x.com/${username}`, `@${username}`)}`
+  ));
+  // Prefix must not be `&` or we linkify inside escaped entities like &#39;
+  html = html.replace(/(^|[\s(])#([A-Za-z0-9_]+)\b/g, (match, prefix, tag) => (
+    `${prefix}${linkedText(`https://x.com/hashtag/${encodeURIComponent(tag)}`, `#${tag}`)}`
+  ));
+  html = html.replace(/(^|[\s(])\$([A-Za-z][A-Za-z0-9_]{0,9})\b/g, (match, prefix, ticker) => (
+    `${prefix}${linkedText(`https://x.com/search?q=${encodeURIComponent(`$${ticker}`)}`, `$${ticker}`)}`
+  ));
+
   return html.replace(/\n/g, "<br>");
 }
 
@@ -4589,12 +4789,14 @@ function linkedText(url, label) {
 }
 
 function splitTrailingUrlPunctuation(value) {
-  const match = String(value).match(/^(.+?)([),.!?:;]+)?$/);
-  if (!match) return { url: value, trailing: "" };
-  return {
-    url: match[1],
-    trailing: match[2] || ""
-  };
+  let url = String(value || "");
+  let trailing = "";
+  // Peel repeated trailing punctuation (Instagram peels one; Loom captions often stack).
+  while (/[),.!?:;]+$/.test(url)) {
+    trailing = url.slice(-1) + trailing;
+    url = url.slice(0, -1);
+  }
+  return { url, trailing };
 }
 
 function displayUrl(value) {
