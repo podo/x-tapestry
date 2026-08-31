@@ -21,9 +21,9 @@ const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xn
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
 const syncStateKey = "syncStateV20";
-const connectorBuildId = "2026-08-31T12:00Z-clickable-body-links";
-const connectorRelease = "1.3.35";
-const connectorPluginVersion = 40;
+const connectorBuildId = "2026-08-31T12:20Z-full-url-anchor-text";
+const connectorRelease = "1.3.36";
+const connectorPluginVersion = 41;
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
@@ -4529,33 +4529,53 @@ function linkifiedText(value) {
   let html = "";
   let lastIndex = 0;
   let match;
+  let lastEmittedUrl = null;
   while ((match = regex.exec(text)) !== null) {
-    html += escapeHtml(text.slice(lastIndex, match.index));
+    const between = text.slice(lastIndex, match.index);
     if (match[1]) {
       const parts = splitTrailingUrlPunctuation(match[1]);
       if (isInternalPostUrl(parts.url)) {
         // omit bare t.co / x.com status placeholders; external targets are expanded earlier
+        html += escapeHtml(between.replace(/[ \t]+$/g, ""));
+        lastEmittedUrl = null;
       }
       else if (isExternalWebUrl(parts.url)) {
-        html += linkedText(parts.url, displayUrl(parts.url));
-        html += escapeHtml(parts.trailing);
+        // ponytail: Loom timeline styles @mentions from <a> labels; use full URL as
+        // visible text so http(s) anchors render/click like mentions (displayUrl alone stays plain).
+        if (lastEmittedUrl && equivalentWebUrl(lastEmittedUrl, parts.url) && /^[\s]*$/.test(between)) {
+          // drop consecutive duplicate destinations (common on X cards)
+        }
+        else {
+          html += escapeHtml(between);
+          html += linkedText(parts.url, parts.url);
+          html += escapeHtml(parts.trailing);
+          lastEmittedUrl = parts.url;
+        }
       }
       else {
+        html += escapeHtml(between);
         html += escapeHtml(parts.url);
         html += escapeHtml(parts.trailing);
+        lastEmittedUrl = null;
       }
     }
     else if (match[3]) {
+      html += escapeHtml(between);
       html += escapeHtml(match[2]);
       html += linkedText(`https://x.com/${match[3]}`, `@${match[3]}`);
+      lastEmittedUrl = null;
     }
     else if (match[5]) {
+      html += escapeHtml(between);
       html += escapeHtml(match[4]);
       html += linkedText(`https://x.com/hashtag/${encodeURIComponent(match[5])}`, `#${match[5]}`);
+      lastEmittedUrl = null;
     }
     else if (match[7]) {
+      html += escapeHtml(between);
       html += escapeHtml(match[6]);
       html += linkedText(`https://x.com/search?q=${encodeURIComponent(`$${match[7]}`)}`, `$${match[7]}`);
+      lastEmittedUrl = null;
     }
     lastIndex = match.index + match[0].length;
   }
@@ -4564,9 +4584,7 @@ function linkifiedText(value) {
 }
 
 function linkedText(url, label) {
-  // Keep visible label close to the destination URL so timeline previews that
-  // flatten anchors still look like a link, and detail WebKit stays clickable.
-  const text = label || displayUrl(url) || url;
+  const text = label || url;
   return `<a href="${escapeAttribute(url)}">${escapeHtml(text)}</a>`;
 }
 

@@ -448,8 +448,8 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 40);
-  assert.match(source, /connectorBuildId = "2026-08-31T12:00Z-clickable-body-links"/);
+  assert.strictEqual(pluginConfig.version, 41);
+  assert.match(source, /connectorBuildId = "2026-08-31T12:20Z-full-url-anchor-text"/);
   assert.match(source, /videoPreviewHtml/);
   assert.match(source, /embedTweetMediaThumbnails/);
   assert.match(source, /mediaFromFxTwitterStatus/);
@@ -540,12 +540,12 @@ async function run() {
     tweetId: "1950000000000000001",
     url: "https://x.com/openai/status/1950000000000000001"
   });
-  assert.match(item.actions._connectorBuild, /2026-08-31T12:00Z-clickable-body-links@plugin40@1\.3\.35/);
+  assert.match(item.actions._connectorBuild, /2026-08-31T12:20Z-full-url-anchor-text@plugin41@1.3.36/);
   assert.ok(item.actions._timelineAvatarRaw);
   assert.match(item.actions._authorAvatarInput, /^data:\d+$/);
   assert.match(item.actions._authorAvatarAssigned, /^data:\d+$/);
   assert.match(item.actions._authorAvatarLookup, /^(timeline|profile)\+embed$/);
-  assert.match(item.body, /<!-- local\.x\.timeline 2026-08-31T12:00Z-clickable-body-links@plugin40@1\.3\.35 -->/);
+  assert.match(item.body, /<!-- local\.x\.timeline 2026-08-31T12:20Z-full-url-anchor-text@plugin41@1.3.36 -->/);
   assert.strictEqual(item.attachments[0].url, "https://pbs.twimg.com/media/a.jpg");
   assert.strictEqual(item.attachments[0].mimeType, "image/jpeg");
   assert.strictEqual(item.attachments[0].text, "Alt text");
@@ -692,7 +692,7 @@ async function run() {
   assert.strictEqual(following.results[0].attachments[0].aspectSize.height, 675);
   assert.strictEqual(
     bodyWithoutConnectorStamp(following.results[0].body),
-    '<p>Read <a href="https://example.com/home">example.com/home</a></p>'
+    '<p>Read <a href="https://example.com/home">https://example.com/home</a></p>'
   );
   const homeLoadApi = apiCalls(following, "HomeLatestTimeline").pop();
   const homeLoadVariables = graphqlVariables(homeLoadApi);
@@ -752,7 +752,7 @@ async function run() {
   assert.strictEqual(linkCard.results[0].attachments[0].aspectSize.width, 640);
   assert.strictEqual(
     bodyWithoutConnectorStamp(linkCard.results[0].body),
-    '<p>Read this<br><a href="https://example.com/card">example.com/card</a></p>'
+    '<p>Read this<br><a href="https://example.com/card">https://example.com/card</a></p>'
   );
 
   const tweetCard = makeContext({
@@ -789,7 +789,7 @@ async function run() {
   assert.match(tweetCard.results[0].attachments[0].image, /^data:image\/jpeg;base64,/);
   assert.strictEqual(
     bodyWithoutConnectorStamp(tweetCard.results[0].body),
-    '<p>Read tweet card <a href="https://example.com/tweet-card">example.com/tweet-card</a></p>'
+    '<p>Read tweet card <a href="https://example.com/tweet-card">https://example.com/tweet-card</a></p>'
   );
 
   const unifiedCardJson = {
@@ -848,7 +848,7 @@ async function run() {
   assert.strictEqual(unifiedCard.results[0].attachments[0].aspectSize.width, 1200);
   assert.strictEqual(
     bodyWithoutConnectorStamp(unifiedCard.results[0].body),
-    '<p>Unified <a href="https://example.com/unified">example.com/unified</a></p>'
+    '<p>Unified <a href="https://example.com/unified">https://example.com/unified</a></p>'
   );
 
   const multiLinkCard = makeContext({
@@ -912,7 +912,7 @@ async function run() {
   assert.strictEqual(playerCard.results[0].attachments[0].aspectSize.height, 720);
   assert.strictEqual(
     bodyWithoutConnectorStamp(playerCard.results[0].body),
-    '<p>Watch this <a href="https://video.example.com/watch/1">video.example.com/watch/1</a></p>'
+    '<p>Watch this <a href="https://video.example.com/watch/1">https://video.example.com/watch/1</a></p>'
   );
 
   const urlOnlyCard = makeContext({
@@ -941,7 +941,7 @@ async function run() {
   assert.strictEqual(urlOnlyCard.results[0].attachments[0].url, "https://example.com/only");
   assert.strictEqual(
     bodyWithoutConnectorStamp(urlOnlyCard.results[0].body),
-    '<p><a href="https://example.com/only">example.com/only</a></p>'
+    '<p><a href="https://example.com/only">https://example.com/only</a></p>'
   );
 
   const unfurled = makeContext({
@@ -994,7 +994,7 @@ async function run() {
   assert.strictEqual(previewAttachment.aspectSize.height, 630);
   assert.strictEqual(
     bodyWithoutConnectorStamp(unfurled.results[0].body),
-    '<p>Read <a href="https://example.com/preview">example.com/preview</a></p>'
+    '<p>Read <a href="https://example.com/preview">https://example.com/preview</a></p>'
   );
   const previewCall = unfurled._calls.find(call => call.url === "https://example.com/preview");
   assert.ok(previewCall, "missing link preview should fetch the expanded URL");
@@ -1178,7 +1178,7 @@ async function run() {
   assert.strictEqual(modernNested.results[0].author.name, "Nested User");
   assert.strictEqual(modernNested.results[0].author.username, "@nesteduser");
   assert.match(modernNested.results[0].author.avatar, /^data:image\/jpeg;base64,/);
-  assert.match(bodyWithoutConnectorStamp(modernNested.results[0].body), /^<p>Nested video <a href="https:\/\/example.com\/nested">example.com\/nested<\/a><\/p><p><img src="data:image\/jpeg;base64,/);
+  assert.match(bodyWithoutConnectorStamp(modernNested.results[0].body), /^<p>Nested video <a href="https:\/\/example.com\/nested">https:\/\/example.com\/nested<\/a><\/p><p><img src="data:image\/jpeg;base64,/);
   assert.strictEqual(modernNested.results[0].attachments[0].url, "https://video.twimg.com/nested-high.mp4");
   assert.match(modernNested.results[0].attachments[0].thumbnail, /^data:image\/jpeg;base64,/);
   assert.strictEqual(modernNested.results[0].attachments[0].aspectSize.width, 1920);
@@ -1226,7 +1226,7 @@ async function run() {
   assert.ifError(nestedEntityContext.error);
   assert.strictEqual(
     bodyWithoutConnectorStamp(nestedEntityContext.results[0].body),
-    '<p>Details entity link <a href="https://example.org/details">example.org/details</a></p>'
+    '<p>Details entity link <a href="https://example.org/details">https://example.org/details</a></p>'
   );
   assert.strictEqual(nestedEntityContext.results[0].attachments[0].kind, "link");
   assert.strictEqual(nestedEntityContext.results[0].attachments[0].url, "https://example.org/details");
@@ -2356,7 +2356,7 @@ async function run() {
     reutersVideo.results[0].attachments[1].title,
     "Drone strike on ammunition depot ravages Kyiv suburb"
   );
-  assert.match(bodyWithoutConnectorStamp(reutersVideo.results[0].body), /^<p>Liudmyla Polianychko walks through her shattered home outside Kyiv <a href="https:\/\/reut\.rs\/4zOs8v9">reut\.rs\/4zOs8v9<\/a><\/p><p><img src="(?:data:image\/jpeg;base64,|https:\/\/pbs\.twimg\.com\/)/);
+  assert.match(bodyWithoutConnectorStamp(reutersVideo.results[0].body), /^<p>Liudmyla Polianychko walks through her shattered home outside Kyiv <a href="https:\/\/reut\.rs\/4zOs8v9">https:\/\/reut\.rs\/4zOs8v9<\/a><\/p><p><img src="(?:data:image\/jpeg;base64,|https:\/\/pbs\.twimg\.com\/)/);
   assert.doesNotMatch(reutersVideo.results[0].body, /t\.co\/fxZNHuUTYx/);
   assert.match(reutersVideo.results[0].body, /href="https:\/\/reut\.rs\/4zOs8v9"/);
   assert.strictEqual(reutersVideo.results[0].actions._linkCardLookup, "fxtwitter");
