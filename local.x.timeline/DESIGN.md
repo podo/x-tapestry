@@ -8,15 +8,24 @@
 - If a host runtime does not expose the native media constructors, the connector keeps a small escaped inline media fallback and leaves Tapestry's automatic attachment extraction enabled so the app can recover the image/video from the body.
 - A native poll is emitted as a poll attachment. A quoted post is emitted as a quoted item attachment after the parent post's media, poll, or link card.
 - A rich link card is emitted when X provides card metadata and no renderable media or poll already represents the same link. The body keeps the readable post text while the card's media, title, summary, publisher, and destination are rendered by Tapestry. Media and card `t.co` placeholders are hidden from the body.
-- If X has no native card metadata, an expanded external URL may receive a fetched Open Graph/Twitter preview, without sending X session cookies to that external site.
+- If X has no native card metadata, an expanded external URL may receive a fetched Open Graph/Twitter preview, without sending X session cookies to that external site. OG is skipped when title+image already exist (enrichment budget).
 
 ## Feed modes and interactions
 
-- Following Feed is the default collection mode and reads the authenticated account's home timeline.
+- Following Feed is the chronological home timeline (`HomeLatestTimeline`).
+- For You Feed is the algorithmic home timeline (`HomeTimeline`) and sends `seenTweetIds` from the prior page for better incremental fidelity.
+- Bookmarks reads `Bookmarks` GraphQL.
+- List Feed reads `ListLatestTweetsTimeline` using a numeric list ID (or `x.com/i/lists/ID`) in the Handles / List ID field.
+- Mentions prefers `NotificationsTimeline` (`timeline_type: Mentions`) and falls back to search `@you OR to:you`.
 - Individual Accounts reads one or more configured handles. Search Query reads X search results with the configured filters and ranking.
 - Initial loads are bounded by the configured batch size. Incremental refresh uses the persisted high-water mark and stops after the connector's bounded page limit or a known item.
-- The `thread` context action opens the post's X conversation through the Tweet Detail endpoint. Action failures are surfaced to Tapestry.
+- Verify/load probes account settings first and fails with a clear re-paste-cookies message on expired sessions.
+- Card actions: like/unlike, repost/unrepost, bookmark/unbookmark, openLink, votePoll (card_update; default choice 1 in the action payload), openQuote (context), thread (context).
 - Collection feeds keep the X service icon; a single-account feed may use that account's avatar for identification.
+
+## Deferred (not in 1.4.0)
+
+- Communities, Spaces, Twitter Articles, follow/unfollow, and reply compose remain out of scope until needed daily.
 
 ## Loom completion checklist
 
@@ -25,5 +34,7 @@
 - Verify photo, video, and GIF attachments are present, with video thumbnails and dimensions where supplied.
 - Verify rich link cards render title, summary, publisher, image, aspect ratio, and destination.
 - Verify media/card placeholder URLs are absent from the body when a native attachment renders.
-- Verify the inline fallback is used only when native media constructors are unavailable and does not duplicate native media in normal runtimes.
-- Verify quoted posts, polls, replies, reposts, content warnings, and the thread action remain available.
+- Verify body links are blue `<a href>` and diagnostics show `_bodyAnchorCount` ≥ 1 when URLs exist.
+- Verify For You / Following / Bookmarks / List / Mentions modes and their verify display names.
+- Verify bookmark toggles and openQuote/thread context actions.
+- Verify expired cookies surface a re-paste message on Verify.

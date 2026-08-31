@@ -2,8 +2,23 @@
   "variables": [
     {
       "name": "source_mode",
+      "value": "For You Feed",
+      "title": "For You Feed"
+    },
+    {
+      "name": "source_mode",
       "value": "Following Feed",
       "title": "Following Feed"
+    },
+    {
+      "name": "source_mode",
+      "value": "Bookmarks",
+      "title": "Bookmarks"
+    },
+    {
+      "name": "source_mode",
+      "value": "Mentions",
+      "title": "Mentions"
     },
     {
       "name": "x_sources",

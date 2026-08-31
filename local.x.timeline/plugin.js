@@ -5,6 +5,10 @@ const apiBase = "https://x.com/i/api/graphql";
 const xHomeUrl = "https://x.com/";
 const xIconUrl = "https://x.com/favicon.ico";
 const defaultHomeLatestTimelineQueryId = "BKB7oi212Fi7kQtCBGE4zA";
+const defaultHomeTimelineQueryId = "7zlnp2TxC044W4C1ZUJMHw";
+const defaultBookmarksQueryId = "XD0ViOeSOW4YoeNTGjVaYw";
+const defaultListLatestTweetsTimelineQueryId = "FVWmROVvhgjRPC-4jAUh8A";
+const defaultNotificationsTimelineQueryId = "gzC0OYBCnfdYS4M4Gue7BA";
 const defaultSearchTimelineQueryId = "Bcw3RzK-PatNAmbnw54hFw";
 const defaultUserByScreenNameQueryId = "2qvSHpkWTMS9i0zJAwDNiA";
 const defaultUserTweetsQueryId = "hr4gzZONlq23okjU8fIe_A";
@@ -17,13 +21,15 @@ const defaultFavoriteTweetQueryId = "lI07N6Otwv1PhnEgXILM7A";
 const defaultUnfavoriteTweetQueryId = "ZYKSe-w7KEslx3JhSIk5LA";
 const defaultCreateRetweetQueryId = "ojPdsZsimiJrUGLR1sjUtA";
 const defaultDeleteRetweetQueryId = "iQtK4dl5hBmXewYZuEOKVw";
+const defaultCreateBookmarkQueryId = "aoDbu3RHznuiSkQ9aNM67Q";
+const defaultDeleteBookmarkQueryId = "Wlmlj2-xzyS1GN3a6cj-mQ";
 const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
 const syncStateKey = "syncStateV20";
-const connectorBuildId = "2026-08-31T16:25Z-url-fallback-split-links";
-const connectorRelease = "1.3.41";
-const connectorPluginVersion = 46;
+const connectorBuildId = "2026-08-31T20:40Z-feeds-actions-hardening";
+const connectorRelease = "1.4.0";
+const connectorPluginVersion = 50;
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
@@ -35,6 +41,8 @@ const linkPreviewCacheTtlMilliseconds = 7 * 24 * 60 * 60 * 1000;
 const maximumLinkPreviewBytes = 256 * 1024;
 const maximumLinkPreviewCacheEntries = 100;
 const maximumIncrementalPages = 5;
+const maximumEnrichmentConcurrency = 3;
+const cardUpdateUrl = "https://x.com/i/cards/card_update";
 const maximumQueryIdScripts = 40;
 const transactionKeyword = "obfiowerehiring";
 const transactionEpochOffsetMilliseconds = 1682924400 * 1000;
@@ -202,7 +210,26 @@ async function performActionAsync(actionId, actionValue, item) {
     return item;
   }
 
-  if (actionId === "like" || actionId === "unlike" || actionId === "repost" || actionId === "unrepost") {
+  if (actionId === "openQuote") {
+    const value = parseActionValue(actionValue);
+    const tweetId = value.tweetId || tweetIdFromUrl(value.url) || tweetIdFromUrl(item && item.uri);
+    if (!tweetId) throw new Error("Could not determine the quoted X post ID.");
+    const credentials = normalizedCredentials();
+    return tweetDetailItems(tweetId, credentials);
+  }
+
+  if (actionId === "votePoll") {
+    return performPollVoteAction(actionValue, item);
+  }
+
+  if (
+    actionId === "like"
+    || actionId === "unlike"
+    || actionId === "repost"
+    || actionId === "unrepost"
+    || actionId === "bookmark"
+    || actionId === "unbookmark"
+  ) {
     return performEngagementAction(actionId, actionValue, item);
   }
 
@@ -247,10 +274,25 @@ function engagementMutationForAction(actionId) {
       variables: tweetId => ({ tweet_id: String(tweetId), dark_request: false })
     };
   }
-  return {
-    action: "DeleteRetweet",
-    variables: tweetId => ({ source_tweet_id: String(tweetId), dark_request: false })
-  };
+  if (actionId === "unrepost") {
+    return {
+      action: "DeleteRetweet",
+      variables: tweetId => ({ source_tweet_id: String(tweetId), dark_request: false })
+    };
+  }
+  if (actionId === "bookmark") {
+    return {
+      action: "CreateBookmark",
+      variables: tweetId => ({ tweet_id: String(tweetId) })
+    };
+  }
+  if (actionId === "unbookmark") {
+    return {
+      action: "DeleteBookmark",
+      variables: tweetId => ({ tweet_id: String(tweetId) })
+    };
+  }
+  throw new Error(`Unsupported engagement action: ${actionId}`);
 }
 
 function engagementQueryId(action) {
@@ -260,6 +302,8 @@ function engagementQueryId(action) {
   if (action === "UnfavoriteTweet") return defaultUnfavoriteTweetQueryId;
   if (action === "CreateRetweet") return defaultCreateRetweetQueryId;
   if (action === "DeleteRetweet") return defaultDeleteRetweetQueryId;
+  if (action === "CreateBookmark") return defaultCreateBookmarkQueryId;
+  if (action === "DeleteBookmark") return defaultDeleteBookmarkQueryId;
   return "";
 }
 
@@ -285,6 +329,14 @@ function updateItemEngagementState(item, actionId, tweetId) {
   else if (actionId === "unrepost") {
     delete actions.unrepost;
     actions.repost = payload;
+  }
+  else if (actionId === "bookmark") {
+    delete actions.bookmark;
+    actions.unbookmark = payload;
+  }
+  else if (actionId === "unbookmark") {
+    delete actions.unbookmark;
+    actions.bookmark = payload;
   }
 
   item.actions = actions;
@@ -362,9 +414,20 @@ async function verifyAsync() {
     icon: xIconUrl
   };
 
+  await assertSessionHealthy(credentials);
+
   const mode = normalizedSourceMode();
-  if (mode === "following") {
-    await homeLatestTimelinePage(1, null, credentials);
+  if (mode === "following" || mode === "for_you") {
+    await homeFeedPage(mode, 1, null, credentials);
+  }
+  else if (mode === "bookmarks") {
+    await bookmarksTimelinePage(1, null, credentials);
+  }
+  else if (mode === "list") {
+    await listTimelinePage(normalizedListId(), 1, null, credentials);
+  }
+  else if (mode === "mentions") {
+    await mentionsTimelinePage(1, null, credentials);
   }
   else if (mode === "handles") {
     const handles = normalizedHandles();
@@ -400,9 +463,20 @@ async function verifyAsync() {
 async function loadAsync() {
   logConnectorBuild("load");
   const credentials = normalizedCredentials();
+  await assertSessionHealthy(credentials);
   const mode = normalizedSourceMode();
-  if (mode === "following") {
-    return loadFollowingTimeline(credentials);
+  if (mode === "following" || mode === "for_you") {
+    return loadHomeFeedTimeline(mode, credentials);
+  }
+  if (mode === "bookmarks") {
+    return loadCursorFeedTimeline("bookmarks", (limit, cursor) => bookmarksTimelinePage(limit, cursor, credentials), credentials);
+  }
+  if (mode === "list") {
+    const listId = normalizedListId();
+    return loadCursorFeedTimeline(`list:${listId}`, (limit, cursor) => listTimelinePage(listId, limit, cursor, credentials), credentials);
+  }
+  if (mode === "mentions") {
+    return loadCursorFeedTimeline("mentions", (limit, cursor) => mentionsTimelinePage(limit, cursor, credentials), credentials);
   }
   if (mode === "handles") {
     return loadHandleTimelines(credentials);
@@ -410,10 +484,17 @@ async function loadAsync() {
   return loadSearchTimeline(credentials);
 }
 
-async function loadFollowingTimeline(credentials) {
-  const signature = currentSyncSignature("following");
+async function loadHomeFeedTimeline(mode, credentials) {
+  const syncKey = mode === "for_you" ? "for_you" : "following";
+  return loadCursorFeedTimeline(syncKey, (limit, cursor, state) => {
+    const seen = mode === "for_you" ? (state.seenTweetIdsBySource && state.seenTweetIdsBySource[syncKey]) || [] : [];
+    return homeFeedPage(mode, limit, cursor, credentials, seen);
+  }, credentials, { trackSeenForYou: mode === "for_you" });
+}
+
+async function loadCursorFeedTimeline(syncKey, pageFn, credentials, options = {}) {
+  const signature = currentSyncSignature(syncKey);
   const syncState = syncStateForSignature(signature);
-  const syncKey = "following";
   const highWaterId = syncHighWater(syncState, syncKey);
 
   const limit = normalizedBatchSize();
@@ -424,7 +505,7 @@ async function loadFollowingTimeline(credentials) {
   let reachedKnownItem = false;
 
   do {
-    const page = await homeLatestTimelinePage(limit, cursor, credentials);
+    const page = await pageFn(limit, cursor, syncState);
     for (const tweet of page.items) {
       if (!tweet || !tweet.id) continue;
       fetchedIds.push(tweet.id);
@@ -445,6 +526,10 @@ async function loadFollowingTimeline(credentials) {
   const newestId = maxId(fetchedIds);
   if (newestId && (!highWaterId || compareIds(newestId, highWaterId) > 0)) {
     setSyncHighWater(syncState, syncKey, newestId);
+  }
+  if (options.trackSeenForYou) {
+    if (!syncState.seenTweetIdsBySource) syncState.seenTweetIdsBySource = {};
+    syncState.seenTweetIdsBySource[syncKey] = fetchedIds.slice(0, 40);
   }
 
   writeSyncState(syncState);
@@ -897,16 +982,34 @@ async function enrichTweetAuthor(tweet, credentials) {
 async function tweetsToItems(tweets, credentials) {
   resetAvatarCache();
   const normalized = sortTweetsNewestFirst(dedupeTweets(tweets));
-  const items = [];
-  for (const tweet of normalized) {
+  return mapPool(normalized, maximumEnrichmentConcurrency, async (tweet) => {
     await enrichTweetAuthor(tweet, credentials);
     await enrichTweetMedia(tweet, credentials);
     await embedTweetMediaThumbnails(tweet);
     await enrichTweetLinkCard(tweet, credentials);
     finalizeTweetPresentation(tweet);
-    items.push(tweetToItem(tweet));
+    return tweetToItem(tweet);
+  });
+}
+
+async function mapPool(items, concurrency, worker) {
+  const list = Array.isArray(items) ? items : [];
+  const limit = Math.max(1, Number(concurrency) || 1);
+  const results = new Array(list.length);
+  let nextIndex = 0;
+
+  async function run() {
+    while (nextIndex < list.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await worker(list[index], index);
+    }
   }
-  return items;
+
+  const runners = [];
+  for (let i = 0; i < Math.min(limit, list.length); i += 1) runners.push(run());
+  await Promise.all(runners);
+  return results;
 }
 
 async function enrichTweetMedia(tweet, credentials) {
@@ -1444,10 +1547,11 @@ function pruneCardCache(cache) {
 }
 
 function cardNeedsPreview(card) {
+  // Enrichment budget: skip OG when title+image already present (subtitle/site optional).
   return Boolean(
     card
     && isExternalWebUrl(card.url)
-    && (!card.title || !card.subtitle || !card.image || !card.siteName)
+    && (!card.title || !card.image)
   );
 }
 
@@ -1476,21 +1580,22 @@ async function searchTimelinePage(query, count, cursor, credentials) {
   };
 }
 
-async function homeLatestTimelinePage(count, cursor, credentials) {
+async function homeFeedPage(mode, count, cursor, credentials, seenTweetIds = []) {
+  const isFollowing = mode === "following";
   const variables = {
     count,
     includePromotedContent: false,
     latestControlAvailable: true,
     requestContext: "launch",
     withCommunity: true,
-    enableRanking: false,
-    seenTweetIds: []
+    seenTweetIds: Array.isArray(seenTweetIds) ? seenTweetIds.slice(0, 40).map(String) : []
   };
+  if (isFollowing) variables.enableRanking = false;
   if (cursor) variables.cursor = cursor;
 
   const data = await graphqlPost(
-    "HomeLatestTimeline",
-    normalizedHomeLatestTimelineQueryId(),
+    isFollowing ? "HomeLatestTimeline" : "HomeTimeline",
+    isFollowing ? normalizedHomeLatestTimelineQueryId() : normalizedHomeTimelineQueryId(),
     variables,
     readFeatures,
     userTimelineFieldToggles,
@@ -1502,6 +1607,126 @@ async function homeLatestTimelinePage(count, cursor, credentials) {
     items: extractTweetsFromInstructions(instructions),
     nextCursor: bottomCursor(instructions)
   };
+}
+
+async function homeLatestTimelinePage(count, cursor, credentials) {
+  return homeFeedPage("following", count, cursor, credentials);
+}
+
+async function bookmarksTimelinePage(count, cursor, credentials) {
+  const variables = {
+    count,
+    includePromotedContent: false
+  };
+  if (cursor) variables.cursor = cursor;
+  const data = await graphqlGet(
+    "Bookmarks",
+    normalizedBookmarksQueryId(),
+    variables,
+    readFeatures,
+    null,
+    credentials
+  );
+  const instructions = bookmarksTimelineInstructions(data);
+  return {
+    items: extractTweetsFromInstructions(instructions),
+    nextCursor: bottomCursor(instructions)
+  };
+}
+
+async function listTimelinePage(listId, count, cursor, credentials) {
+  if (!listId) throw new Error("Enter a numeric X list ID in Handles / Search Query for List Feed.");
+  const variables = {
+    listId: String(listId),
+    count
+  };
+  if (cursor) variables.cursor = cursor;
+  const data = await graphqlGet(
+    "ListLatestTweetsTimeline",
+    normalizedListLatestTweetsTimelineQueryId(),
+    variables,
+    readFeatures,
+    null,
+    credentials
+  );
+  const instructions = listTimelineInstructions(data);
+  return {
+    items: extractTweetsFromInstructions(instructions),
+    nextCursor: bottomCursor(instructions)
+  };
+}
+
+async function mentionsTimelinePage(count, cursor, credentials) {
+  const variables = {
+    timeline_type: "Mentions",
+    count
+  };
+  if (cursor) variables.cursor = cursor;
+  try {
+    const data = await graphqlGet(
+      "NotificationsTimeline",
+      normalizedNotificationsTimelineQueryId(),
+      variables,
+      readFeatures,
+      null,
+      credentials
+    );
+    const instructions = notificationsTimelineInstructions(data);
+    const items = extractTweetsFromInstructions(instructions);
+    if (items.length > 0 || !cursor) {
+      return { items, nextCursor: bottomCursor(instructions) };
+    }
+  }
+  catch (error) {
+    console.log(`Mentions NotificationsTimeline failed, falling back to search: ${error.message || error}`);
+  }
+
+  const identity = await currentAccountIdentity(credentials);
+  const handle = identity && identity.username ? String(identity.username).replace(/^@/, "") : null;
+  if (!handle) throw new Error("Could not resolve your X username for Mentions Feed.");
+  return searchTimelinePage(`(@${handle}) OR to:${handle}`, count, cursor, credentials);
+}
+
+async function assertSessionHealthy(credentials) {
+  try {
+    const text = await requestText(accountSettingsUrl, "GET", null, restHeaders(credentials), "AccountSettings");
+    let settings = null;
+    try {
+      settings = JSON.parse(text);
+    }
+    catch (error) {
+      settings = null;
+    }
+    if (!settings || !(settings.screen_name || settings.screenName || settings.username)) {
+      console.log("X account settings probe returned no screen_name; continuing with provided cookies.");
+    }
+  }
+  catch (error) {
+    const message = String(error && error.message || error);
+    if (/401|403|unauthorized|forbidden|rejected the session|Refresh auth_token/i.test(message)) {
+      throw new Error("X session expired or rejected. Re-paste auth_token and ct0 (or a fresh Cookie header), then Verify again.");
+    }
+    throw error;
+  }
+}
+
+async function performPollVoteAction(actionValue, item) {
+  const value = parseActionValue(actionValue);
+  const tweetId = value.tweetId || tweetIdFromUrl(value.url) || tweetIdFromUrl(item && item.uri);
+  const choice = Number(value.choice || value.selectedChoice || value.option || 0);
+  const cardUri = value.cardUri || value.card_uri || "";
+  if (!tweetId) throw new Error("Could not determine the X post ID for this poll.");
+  if (!(choice >= 1 && choice <= 4)) throw new Error("Poll votes need choice 1-4 in the action value.");
+  if (!cardUri) throw new Error("This poll is missing card_uri; reload the feed and try again.");
+
+  const credentials = normalizedCredentials();
+  const parameters = {
+    card_uri: String(cardUri),
+    selected_choice: String(choice),
+    tweet_id: String(tweetId)
+  };
+  await requestText(cardUpdateUrl, "POST", parameters, restHeaders(credentials), "CardUpdate");
+  return item;
 }
 
 async function userProfileByHandle(handle, credentials) {
@@ -1971,6 +2196,52 @@ function homeTimelineInstructions(data) {
   return root && Array.isArray(root.instructions) ? root.instructions : [];
 }
 
+function bookmarksTimelineInstructions(data) {
+  const root = data && data.data && (
+    (data.data.bookmark_timeline_v2 && data.data.bookmark_timeline_v2.timeline)
+    || (data.data.bookmark_timeline && data.data.bookmark_timeline.timeline)
+  );
+  return root && Array.isArray(root.instructions) ? root.instructions : [];
+}
+
+function listTimelineInstructions(data) {
+  const list = data && data.data && data.data.list;
+  const root = list && (
+    (list.tweets_timeline && list.tweets_timeline.timeline)
+    || (list.timeline && list.timeline.timeline)
+    || list.timeline
+  );
+  return root && Array.isArray(root.instructions) ? root.instructions : [];
+}
+
+function notificationsTimelineInstructions(data) {
+  const root = data && data.data && (
+    (data.data.viewer_v2 && data.data.viewer_v2.user_results && data.data.viewer_v2.user_results.result
+      && data.data.viewer_v2.user_results.result.notification_timeline
+      && data.data.viewer_v2.user_results.result.notification_timeline.timeline)
+    || (data.data.viewer && data.data.viewer.user_results && data.data.viewer.user_results.result
+      && data.data.viewer.user_results.result.notification_timeline
+      && data.data.viewer.user_results.result.notification_timeline.timeline)
+    || (data.data.notifications_timeline && data.data.notifications_timeline.timeline)
+    || (data.data.notification_timeline && data.data.notification_timeline.timeline)
+  );
+  if (root && Array.isArray(root.instructions)) return root.instructions;
+  // Fallback: deep-scan for the first instructions array under data.
+  return findInstructionsDeep(data && data.data) || [];
+}
+
+function findInstructionsDeep(node, depth = 0) {
+  if (!node || depth > 8) return null;
+  if (Array.isArray(node.instructions)) return node.instructions;
+  if (typeof node !== "object") return null;
+  for (const value of Object.values(node)) {
+    if (!value || typeof value !== "object") continue;
+    const found = findInstructionsDeep(value, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
 function userTimelineInstructions(data) {
   const user = data && data.data && data.data.user && data.data.user.result;
   const root = user
@@ -2127,6 +2398,7 @@ function normalizeTweet(rawResult, includeQuoted) {
     isRetweet: /^RT @/.test(fullText),
     favorited: Boolean(legacy && legacy.favorited),
     retweeted: Boolean(legacy && legacy.retweeted),
+    bookmarked: Boolean(legacy && legacy.bookmarked),
     repostedByName: null,
     repostedByUsername: null,
     repostedByAvatar: null,
@@ -3128,9 +3400,14 @@ function extractPoll(result) {
   if (options.length === 0) return null;
 
   const end = cardString(values.end_datetime_utc) || cardString(values.end_time);
+  const cardUri = cardString(values.card_uri)
+    || cardString(values.card_url)
+    || (result && result.card && (result.card.url || result.card.rest_id))
+    || "";
   return {
     options,
-    endDate: pollEndDate(end)
+    endDate: pollEndDate(end),
+    cardUri: cardUri || null
   };
 }
 
@@ -3818,12 +4095,28 @@ function tweetActions(tweet, bodyHtml) {
     url: tweet.url
   });
   actions.thread = payload;
+  if (tweet.quoted && tweet.quoted.id) {
+    actions.openQuote = JSON.stringify({
+      tweetId: tweet.quoted.id,
+      url: tweet.quoted.url || ""
+    });
+  }
+  if (tweet.poll && tweet.poll.cardUri) {
+    actions.votePoll = JSON.stringify({
+      tweetId: tweet.id,
+      url: tweet.url,
+      cardUri: tweet.poll.cardUri,
+      choice: 1
+    });
+  }
 
   const engagement = engagementActionsForTweet(tweet);
   if (engagement.like) actions.like = engagement.like;
   if (engagement.unlike) actions.unlike = engagement.unlike;
   if (engagement.repost) actions.repost = engagement.repost;
   if (engagement.unrepost) actions.unrepost = engagement.unrepost;
+  if (engagement.bookmark) actions.bookmark = engagement.bookmark;
+  if (engagement.unbookmark) actions.unbookmark = engagement.unbookmark;
 
   const plainBody = htmlDecode(String(bodyHtml || "").replace(/<[^>]+>/g, " "));
   tweet.externalUrls = dedupeStrings([
@@ -3857,7 +4150,9 @@ function engagementActionsForTweet(tweet) {
     like: tweet.favorited ? null : payload,
     unlike: tweet.favorited ? payload : null,
     repost: tweet.retweeted ? null : payload,
-    unrepost: tweet.retweeted ? payload : null
+    unrepost: tweet.retweeted ? payload : null,
+    bookmark: tweet.bookmarked ? null : payload,
+    unbookmark: tweet.bookmarked ? payload : null
   };
 }
 
@@ -3899,6 +4194,10 @@ function currentSyncSignature(query) {
     fetchLinkPreviews: fetchLinkPreviews(),
     batchSize: normalizedBatchSize(),
     homeLatestTimelineQueryId: normalizedHomeLatestTimelineQueryId(),
+    homeTimelineQueryId: normalizedHomeTimelineQueryId(),
+    bookmarksQueryId: normalizedBookmarksQueryId(),
+    listLatestTweetsTimelineQueryId: normalizedListLatestTweetsTimelineQueryId(),
+    notificationsTimelineQueryId: normalizedNotificationsTimelineQueryId(),
     searchQueryId: normalizedSearchQueryId(),
     userByScreenNameQueryId: normalizedUserByScreenNameQueryId(),
     userTweetsQueryId: normalizedUserTweetsQueryId(),
@@ -3950,8 +4249,8 @@ function writeSyncState(state) {
 function buildSearchQuery() {
   const mode = normalizedSourceMode();
   const input = stringInput("x_sources").trim();
-  if (!input && mode !== "following") {
-    throw new Error("Enter one or more X handles, or switch Source Mode to Search Query and enter a query.");
+  if (!input && mode !== "following" && mode !== "for_you" && mode !== "bookmarks" && mode !== "mentions") {
+    throw new Error("Enter one or more X handles, a list ID, or switch Source Mode to Search Query and enter a query.");
   }
 
   let query;
@@ -3976,7 +4275,11 @@ function buildSearchQuery() {
 
 function sourceLabel() {
   const mode = normalizedSourceMode();
+  if (mode === "for_you") return "For You Feed";
   if (mode === "following") return "Following Feed";
+  if (mode === "bookmarks") return "Bookmarks";
+  if (mode === "list") return `List ${normalizedListId() || ""}`.trim();
+  if (mode === "mentions") return "Mentions";
   if (mode === "search query") return "Search";
   const handles = normalizedHandles();
   if (handles.length === 0) return "Individual Accounts";
@@ -4040,9 +4343,23 @@ function completeCookieHeader(header, authToken, csrf) {
 
 function normalizedSourceMode() {
   const value = normalizedChoice(stringInput("source_mode"));
+  if (value === "for you feed" || value === "for you" || value === "foryou" || value === "for_you") return "for_you";
   if (value === "following feed" || value === "feed" || value === "following") return "following";
+  if (value === "bookmarks" || value === "bookmarks feed") return "bookmarks";
+  if (value === "list feed" || value === "list" || value === "lists") return "list";
+  if (value === "mentions" || value === "mentions feed") return "mentions";
   if (value === "search query" || value === "search") return "search query";
   return "handles";
+}
+
+function normalizedListId() {
+  const raw = stringInput("x_sources").trim();
+  if (!raw) return null;
+  const fromUrl = raw.match(/(?:x|twitter)\.com\/i\/lists\/(\d+)/i) || raw.match(/lists\/(\d+)/i);
+  if (fromUrl) return fromUrl[1];
+  if (/^\d{4,}$/.test(raw)) return raw;
+  const first = raw.split(/[,\s]+/).find(part => /^\d{4,}$/.test(part));
+  return first || null;
 }
 
 function normalizedSearchProduct() {
@@ -4058,6 +4375,26 @@ function normalizedBatchSize() {
 function normalizedHomeLatestTimelineQueryId() {
   const value = stringInput("home_latest_timeline_query_id").trim();
   return value || defaultHomeLatestTimelineQueryId;
+}
+
+function normalizedHomeTimelineQueryId() {
+  const value = stringInput("home_timeline_query_id").trim();
+  return value || defaultHomeTimelineQueryId;
+}
+
+function normalizedBookmarksQueryId() {
+  const value = stringInput("bookmarks_query_id").trim();
+  return value || readQueryIdCache("Bookmarks") || defaultBookmarksQueryId;
+}
+
+function normalizedListLatestTweetsTimelineQueryId() {
+  const value = stringInput("list_latest_tweets_timeline_query_id").trim();
+  return value || readQueryIdCache("ListLatestTweetsTimeline") || defaultListLatestTweetsTimelineQueryId;
+}
+
+function normalizedNotificationsTimelineQueryId() {
+  const value = stringInput("notifications_timeline_query_id").trim();
+  return value || readQueryIdCache("NotificationsTimeline") || defaultNotificationsTimelineQueryId;
 }
 
 function normalizedSearchQueryId() {

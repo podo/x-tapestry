@@ -21,9 +21,30 @@
       "icon": "tapestry.boost.fill"
     },
     {
+      "id": "bookmark",
+      "name": "Bookmark",
+      "icon": "tapestry.bookmark"
+    },
+    {
+      "id": "unbookmark",
+      "name": "Bookmarked",
+      "icon": "tapestry.bookmark.fill"
+    },
+    {
       "id": "openLink",
       "name": "Open Link",
       "icon": "tapestry.open.original"
+    },
+    {
+      "id": "openQuote",
+      "name": "Quoted Post",
+      "icon": "tapestry.view.details",
+      "role": "context"
+    },
+    {
+      "id": "votePoll",
+      "name": "Vote (choice 1)",
+      "icon": "checklist"
     },
     {
       "id": "thread",

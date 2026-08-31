@@ -18,18 +18,25 @@ or third-party tweet-pulling service.
    URL to prefill the handle.
 4. Paste the full cookie header into **Cookie Header**, or paste the individual
    values into **auth_token Cookie** and **ct0 Cookie**.
-5. Set **Source Mode** to **Following Feed** for your authenticated X home feed,
-   **Individual Accounts** for comma-separated handles such as `openai, sama`,
-   or **Search Query** for a full X search.
+5. Set **Source Mode** to one of:
+   - **For You Feed** — algorithmic home (`HomeTimeline`)
+   - **Following Feed** — chronological home (`HomeLatestTimeline`)
+   - **Bookmarks** — your saved posts
+   - **List Feed** — put a numeric list ID (or `x.com/i/lists/ID`) in Handles / List ID
+   - **Mentions** — posts that mention you
+   - **Individual Accounts** — comma-separated handles such as `openai, sama`
+   - **Search Query** — a full X search string
 
 The cookies are entered during feed setup and are not included in the connector
 bundle. Treat them like passwords. Do not commit them, paste them into issues,
-or include them in screenshots.
+or include them in screenshots. If Verify fails with a session-expired message,
+re-run the cookie helper (or re-copy cookies) and Verify again.
 
 ## Features
 
 - Zero per-tweet cost through an authenticated `x.com` web session
-- Following Feed mode using your authenticated reverse-chronological X home feed
+- For You, Following, Bookmarks, List, Mentions, Individual Accounts, and Search feeds
+- Like, repost, bookmark, open link, open quoted post, poll vote (choice 1 default), and thread actions
 - Individual Accounts mode using comma-separated X profile timelines
 - Raw X search query feeds for advanced filters
 - Feed Finder support for `@handle`, `x.com`, and `twitter.com` inputs
@@ -47,6 +54,7 @@ or include them in screenshots.
 - Quoted posts are attached as Tapestry quoted-item previews
 - Poll cards are attached when X includes poll metadata in the response
 - Thread context action for opening a conversation inside Tapestry
+- Like, repost, and bookmark actions with toggled filled-state icons
 - Annotations for replies, reposts, quotes, likes, views, and repost source
 - Linked URLs, handles, hashtags, and cashtags in post text
 - Content warnings for sensitive posts when X marks them
@@ -57,10 +65,14 @@ or include them in screenshots.
 
 ## Reliability Notes
 
-This connector uses X's private web GraphQL API. It is intentionally read-only,
-but the authentication cookies still grant access to your account. X can rotate
+This connector uses X's private web GraphQL API for reading feeds and performing
+engagement actions (like, repost, bookmark, poll vote) with your session cookies.
+Those cookies grant full account access—treat them like passwords. X can rotate
 query IDs, change response shapes, rate-limit the account, or block automated
 traffic.
+
+If Verify reports an expired session, re-paste cookies (or re-run
+`scripts/x-cookie-helper.mjs`) and Verify again.
 
 If loading starts failing with a query-ID or GraphQL validation error, capture
 the current query ID from a fresh X web request and update the matching

@@ -348,6 +348,7 @@ function makeContext(overrides = {}) {
       if (url === "https://x.com/") return makeHomeHtml();
       if (url.includes("ondemand.s.abcdefa.js")) return ondemandJs;
       if (url.includes("/account/settings.json")) return JSON.stringify(context.accountSettings);
+      if (url.includes("/i/cards/card_update")) return JSON.stringify({ status: "success" });
       if (url.includes("/users/show.json")) {
         const handle = new URL(url).searchParams.get("screen_name") || "openai";
         return JSON.stringify(userProfileBody(handle).data.user.result.legacy
@@ -369,6 +370,16 @@ function makeContext(overrides = {}) {
       }
       if (action === "UserTweets") return JSON.stringify(context.userTimeline || context.timeline);
       if (action === "HomeLatestTimeline") return JSON.stringify(context.homeTimeline || homeTimelineBody([tweetResult()]));
+      if (action === "HomeTimeline") return JSON.stringify(context.homeTimeline || homeTimelineBody([tweetResult()]));
+      if (action === "Bookmarks") return JSON.stringify(context.bookmarksTimeline || {
+        data: { bookmark_timeline_v2: { timeline: (context.homeTimeline || homeTimelineBody([tweetResult()])).data.home.home_timeline_urt } }
+      });
+      if (action === "ListLatestTweetsTimeline") return JSON.stringify(context.listTimeline || {
+        data: { list: { tweets_timeline: { timeline: (context.homeTimeline || homeTimelineBody([tweetResult()])).data.home.home_timeline_urt } } }
+      });
+      if (action === "NotificationsTimeline") return JSON.stringify(context.mentionsTimeline || {
+        data: { notification_timeline: { timeline: (context.homeTimeline || homeTimelineBody([tweetResult()])).data.home.home_timeline_urt } }
+      });
       if (action === "TweetDetail") return JSON.stringify(context.threadTimeline || tweetDetailBody([tweetResult()]));
       if (action === "SearchTimeline") return JSON.stringify(context.timeline);
       return JSON.stringify(context.timeline);
@@ -448,8 +459,8 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 46);
-  assert.match(source, /connectorBuildId = "2026-08-31T16:25Z-url-fallback-split-links"/);
+  assert.strictEqual(pluginConfig.version, 50);
+  assert.match(source, /connectorBuildId = "2026-08-31T20:40Z-feeds-actions-hardening"/);
   assert.strictEqual(pluginConfig.default_color, "slate");
   assert.match(source, /videoPreviewHtml/);
   assert.match(source, /embedTweetMediaThumbnails/);
@@ -457,6 +468,10 @@ async function run() {
   assert.match(source, /enrichTweetMedia/);
   assert.match(source, /engagementActionsForTweet/);
   assert.match(source, /FavoriteTweet/);
+  assert.match(source, /CreateBookmark/);
+  assert.match(source, /DeleteBookmark/);
+  assert.match(source, /HomeTimeline/);
+  assert.match(source, /homeFeedPage/);
   assert.match(source, /timelineAvatarFromHint/);
   assert.match(source, /_timelineAvatarRaw/);
   assert.match(source, /avatarFromXProfilePage/);
@@ -465,11 +480,16 @@ async function run() {
   assert.match(source, /subscriptions_feature_can_gift_premium/);
   assert.match(source, /fxtwitter-no-creds/);
   const sourceModeInput = uiConfig.inputs.find(input => input.name === "source_mode");
+  assert.ok(sourceModeInput.choices.includes("For You Feed"));
   assert.ok(sourceModeInput.choices.includes("Following Feed"));
+  assert.ok(sourceModeInput.choices.includes("Bookmarks"));
+  assert.ok(sourceModeInput.choices.includes("List Feed"));
+  assert.ok(sourceModeInput.choices.includes("Mentions"));
   assert.ok(sourceModeInput.choices.includes("Individual Accounts"));
   assert.ok(sourceModeInput.choices.includes("Search Query"));
   assert.ok(uiConfig.inputs.some(input => input.name === "x_sources"));
   assert.ok(uiConfig.inputs.some(input => input.name === "fetch_link_previews"));
+  assert.ok(uiConfig.inputs.some(input => input.name === "home_timeline_query_id"));
   assert.ok(uiConfig.inputs.some(input => input.name === "home_latest_timeline_query_id"));
   assert.ok(uiConfig.inputs.some(input => input.name === "user_by_screen_name_query_id"));
   assert.ok(uiConfig.inputs.some(input => input.name === "user_tweets_query_id"));
@@ -477,12 +497,23 @@ async function run() {
   assert.ok(discovery.sites.includes("x.com"));
   assert.ok(discovery.sites.includes("twitter.com"));
   assert.ok(discovery.input.some(input => input.url === "https://x.com/$1"));
+  assert.ok(suggestions.variables.some(variable => variable.title === "For You Feed"));
   assert.ok(suggestions.variables.some(variable => variable.title === "Following Feed"));
+  assert.ok(suggestions.variables.some(variable => variable.title === "Bookmarks"));
+  assert.ok(suggestions.variables.some(variable => variable.title === "Mentions"));
   assert.ok(suggestions.variables.some(variable => variable.title === "OpenAI + Sam"));
   assert.ok(actions.items.some(action => action.id === "like" && action.icon === "heart"));
   assert.ok(actions.items.some(action => action.id === "repost" && action.icon === "tapestry.boost"));
+  assert.ok(actions.items.some(action => action.id === "bookmark" && action.icon === "tapestry.bookmark"));
+  assert.ok(actions.items.some(action => action.id === "unbookmark" && action.icon === "tapestry.bookmark.fill"));
   assert.ok(actions.items.some(action => action.id === "openLink" && action.icon === "tapestry.open.original"));
+  assert.ok(actions.items.some(action => action.id === "openQuote" && action.role === "context"));
+  assert.ok(actions.items.some(action => action.id === "votePoll"));
   assert.ok(actions.items.some(action => action.id === "thread" && action.role === "context"));
+  assert.match(source, /assertSessionHealthy/);
+  assert.match(source, /bookmarksTimelinePage/);
+  assert.match(source, /mapPool/);
+  assert.match(source, /seenTweetIds/);
   assert.ok(apps.apps.some(app => app.name === "X" && app.template === "__URL__"));
   assert.strictEqual("@openai".match(regexFromPattern(discovery.input[0].match))[1], "openai");
   assert.strictEqual("https://x.com/openai".match(regexFromPattern(discovery.url[0].extract))[1], "openai");
@@ -534,6 +565,10 @@ async function run() {
     tweetId: "1950000000000000001",
     url: "https://x.com/openai/status/1950000000000000001"
   });
+  assert.deepStrictEqual(JSON.parse(item.actions.bookmark), {
+    tweetId: "1950000000000000001",
+    url: "https://x.com/openai/status/1950000000000000001"
+  });
   assert.deepStrictEqual(JSON.parse(item.actions.openLink), {
     url: "https://example.com/article"
   });
@@ -542,12 +577,12 @@ async function run() {
     tweetId: "1950000000000000001",
     url: "https://x.com/openai/status/1950000000000000001"
   });
-  assert.match(item.actions._connectorBuild, /2026-08-31T16:25Z-url-fallback-split-links@plugin46@1.3.41/);
+  assert.match(item.actions._connectorBuild, /2026-08-31T20:40Z-feeds-actions-hardening@plugin50@1.4.0/);
   assert.ok(item.actions._timelineAvatarRaw);
   assert.match(item.actions._authorAvatarInput, /^data:\d+$/);
   assert.match(item.actions._authorAvatarAssigned, /^data:\d+$/);
   assert.match(item.actions._authorAvatarLookup, /^(timeline|profile)\+embed$/);
-  assert.match(item.body, /<!-- local\.x\.timeline 2026-08-31T16:25Z-url-fallback-split-links@plugin46@1.3.41 -->/);
+  assert.match(item.body, /<!-- local\.x\.timeline 2026-08-31T20:40Z-feeds-actions-hardening@plugin50@1.4.0 -->/);
   assert.ok(Number(item.actions._bodyAnchorCount) >= 1);
   assert.ok(Number(item.actions._externalUrlCount) >= 1);
   assert.match(item.actions._urlApi, /^(ok|missing)$/);
@@ -724,6 +759,116 @@ async function run() {
   assert.strictEqual(homeLoadVariables.withCommunity, true);
   assert.strictEqual(homeLoadVariables.enableRanking, false);
   assert.deepStrictEqual(JSON.parse(following._state.get("syncStateV20")).highWaterBySource.following, "1950000000000000022");
+
+  const forYou = makeContext({
+    source_mode: "For You Feed",
+    x_sources: "",
+    homeTimeline: homeTimelineBody([
+      tweetResult({
+        id: "1950000000000000090",
+        username: "verge",
+        name: "The Verge",
+        fullText: "Algorithm pick https://t.co/fy",
+        legacy: {
+          entities: {
+            urls: [
+              urlEntity("https://t.co/fy", "https://example.com/for-you", "example.com/for-you")
+            ]
+          },
+          extended_entities: { media: [] }
+        }
+      })
+    ])
+  });
+  vm.runInContext("verify()", forYou);
+  await settle();
+  assert.ifError(forYou.error);
+  assert.strictEqual(forYou.verification.displayName, "X - For You Feed");
+  const forYouVerifyApi = apiCall(forYou, "HomeTimeline");
+  assert.ok(forYouVerifyApi, "verify should call HomeTimeline for For You");
+  assert.strictEqual(forYouVerifyApi.method, "POST");
+  const forYouVerifyVariables = graphqlVariables(forYouVerifyApi);
+  assert.strictEqual(forYouVerifyVariables.count, 1);
+  assert.strictEqual(forYouVerifyVariables.includePromotedContent, false);
+  assert.strictEqual(forYouVerifyVariables.latestControlAvailable, true);
+  assert.strictEqual(forYouVerifyVariables.requestContext, "launch");
+  assert.strictEqual(forYouVerifyVariables.withCommunity, true);
+  assert.strictEqual(forYouVerifyVariables.enableRanking, undefined);
+  assert.strictEqual(JSON.parse(forYouVerifyApi.parameters).queryId, "7zlnp2TxC044W4C1ZUJMHw");
+
+  vm.runInContext("load()", forYou);
+  await settle();
+  assert.ifError(forYou.error);
+  assert.strictEqual(forYou.results.length, 1);
+  assert.strictEqual(forYou.results[0].uri, "https://x.com/verge/status/1950000000000000090");
+  assert.ok(apiCall(forYou, "HomeTimeline"), "load should call HomeTimeline");
+  assert.deepStrictEqual(JSON.parse(forYou._state.get("syncStateV20")).highWaterBySource.for_you, "1950000000000000090");
+  assert.ok(Array.isArray(JSON.parse(forYou._state.get("syncStateV20")).seenTweetIdsBySource.for_you));
+
+  const bookmarksFeed = makeContext({
+    source_mode: "Bookmarks",
+    x_sources: "",
+    homeTimeline: homeTimelineBody([tweetResult({ id: "1950000000000000091", fullText: "Saved post", legacy: { entities: { urls: [] }, extended_entities: { media: [] } } })])
+  });
+  vm.runInContext("verify()", bookmarksFeed);
+  await settle();
+  assert.ifError(bookmarksFeed.error);
+  assert.strictEqual(bookmarksFeed.verification.displayName, "X - Bookmarks");
+  assert.ok(apiCall(bookmarksFeed, "Bookmarks"), "verify should call Bookmarks");
+  vm.runInContext("load()", bookmarksFeed);
+  await settle();
+  assert.ifError(bookmarksFeed.error);
+  assert.strictEqual(bookmarksFeed.results.length, 1);
+
+  const listFeed = makeContext({
+    source_mode: "List Feed",
+    x_sources: "1539453138322673664",
+    homeTimeline: homeTimelineBody([tweetResult({ id: "1950000000000000092", fullText: "List post", legacy: { entities: { urls: [] }, extended_entities: { media: [] } } })])
+  });
+  vm.runInContext("verify()", listFeed);
+  await settle();
+  assert.ifError(listFeed.error);
+  assert.match(listFeed.verification.displayName, /List 1539453138322673664/);
+  const listApi = apiCall(listFeed, "ListLatestTweetsTimeline");
+  assert.ok(listApi, "verify should call ListLatestTweetsTimeline");
+  assert.strictEqual(graphqlVariables(listApi).listId, "1539453138322673664");
+
+  const mentionsFeed = makeContext({
+    source_mode: "Mentions",
+    x_sources: "",
+    homeTimeline: homeTimelineBody([tweetResult({ id: "1950000000000000093", fullText: "Hey @podo", legacy: { entities: { urls: [] }, extended_entities: { media: [] } } })])
+  });
+  vm.runInContext("verify()", mentionsFeed);
+  await settle();
+  assert.ifError(mentionsFeed.error);
+  assert.strictEqual(mentionsFeed.verification.displayName, "X - Mentions");
+  assert.ok(apiCall(mentionsFeed, "NotificationsTimeline"), "verify should call NotificationsTimeline");
+
+  const openQuoteContext = makeContext();
+  vm.runInContext("performAction('openQuote', JSON.stringify({ tweetId: '1950000000000000001' }), { uri: 'https://x.com/openai/status/1950000000000000001' })", openQuoteContext);
+  await settle();
+  assert.ifError(openQuoteContext.actionError);
+  assert.ok(apiCall(openQuoteContext, "TweetDetail"), "openQuote should call TweetDetail");
+
+  const pollVoteContext = makeContext();
+  vm.runInContext("performAction('votePoll', JSON.stringify({ tweetId: '1950000000000000001', cardUri: 'card://abc', choice: 2 }), { uri: 'https://x.com/openai/status/1950000000000000001' })", pollVoteContext);
+  await settle();
+  assert.ifError(pollVoteContext.actionError);
+  assert.ok(pollVoteContext._calls.some(call => String(call.url).includes('/i/cards/card_update')), 'votePoll should hit card_update');
+
+  const authFail = makeContext();
+  const authFailRequest = authFail.sendRequest;
+  authFail.sendRequest = async (url, method, parameters, headers, fullResponse) => {
+    if (String(url).includes('/account/settings.json')) {
+      const payload = JSON.stringify({ errors: [{ message: 'Unauthorized' }] });
+      return fullResponse ? JSON.stringify({ status: 401, headers: {}, body: payload }) : payload;
+    }
+    return authFailRequest(url, method, parameters, headers, fullResponse);
+  };
+  vm.runInContext("verify()", authFail);
+  await settle();
+  assert.ok(authFail.error, "expired session should fail verify");
+  assert.match(String(authFail.error.message || authFail.error), /session expired|Re-paste|rejected the session|Refresh auth_token/i);
 
   const wrapped = makeContext({
     timeline: timelineBody([{ tweet: tweetResult({ id: "1950000000000000004" }) }]),
@@ -1775,6 +1920,39 @@ async function run() {
   assert.ok(likeContext.actionResult.actions.unlike);
   assert.ok(!likeContext.actionResult.actions.like);
   assert.match(likeContext.actionResult.annotations[0].text, /13 likes/);
+
+  const bookmarkContext = makeContext();
+  bookmarkContext.sendRequest = async (url, method, parameters, headers) => {
+    bookmarkContext._calls.push({ url, method, parameters, headers });
+    if (url === "https://x.com/") return makeHomeHtml();
+    if (url.includes("ondemand.s.abcdefa.js")) return ondemandJs;
+    const action = graphqlAction(url);
+    if (action === "UserByScreenName") return JSON.stringify(userProfileBody("openai"));
+    if (action === "UserTweets") return JSON.stringify(homeTimelineBody([tweetResult()]));
+    if (action === "CreateBookmark") {
+      return JSON.stringify({ data: { tweet_bookmark_put: "Done" } });
+    }
+    if (action === "DeleteBookmark") {
+      return JSON.stringify({ data: { tweet_bookmark_delete: "Done" } });
+    }
+    return JSON.stringify({ data: {} });
+  };
+  vm.runInContext("performAction('bookmark', JSON.stringify({ tweetId: '1950000000000000001' }), { uri: 'https://x.com/openai/status/1950000000000000001', actions: { bookmark: JSON.stringify({ tweetId: '1950000000000000001' }) }, annotations: [ { text: '4 replies - 3 reposts - 12 likes - 1,234 views' } ] })", bookmarkContext);
+  await settle();
+  assert.ifError(bookmarkContext.actionError);
+  const createBookmarkCall = apiCall(bookmarkContext, "CreateBookmark");
+  assert.ok(createBookmarkCall, "bookmark action should call CreateBookmark");
+  assert.match(createBookmarkCall.url, /aoDbu3RHznuiSkQ9aNM67Q\/CreateBookmark/);
+  assert.ok(bookmarkContext.actionResult.actions.unbookmark);
+  assert.ok(!bookmarkContext.actionResult.actions.bookmark);
+  assert.match(bookmarkContext.actionResult.annotations[0].text, /12 likes/);
+
+  vm.runInContext("performAction('unbookmark', JSON.stringify({ tweetId: '1950000000000000001' }), { uri: 'https://x.com/openai/status/1950000000000000001', actions: { unbookmark: JSON.stringify({ tweetId: '1950000000000000001' }) }, annotations: [ { text: '4 replies - 3 reposts - 12 likes - 1,234 views' } ] })", bookmarkContext);
+  await settle();
+  assert.ifError(bookmarkContext.actionError);
+  assert.ok(apiCall(bookmarkContext, "DeleteBookmark"), "unbookmark action should call DeleteBookmark");
+  assert.ok(bookmarkContext.actionResult.actions.bookmark);
+  assert.ok(!bookmarkContext.actionResult.actions.unbookmark);
 
   const cookieOnly = makeContext({
     auth_token: "",

@@ -22,14 +22,14 @@
       "name": "source_mode",
       "type": "choices",
       "prompt": "Source Mode",
-      "choices": "Following Feed,Individual Accounts,Search Query",
+      "choices": "For You Feed,Following Feed,Bookmarks,List Feed,Mentions,Individual Accounts,Search Query",
       "value": "Following Feed"
     },
     {
       "name": "x_sources",
       "type": "text",
-      "prompt": "Handles / Search Query",
-      "placeholder": "Only needed for Individual Accounts or Search Query"
+      "prompt": "Handles / List ID / Search Query",
+      "placeholder": "Handles, numeric list ID / x.com/i/lists/ID, or search text"
     },
     {
       "name": "query_suffix",
@@ -94,11 +94,39 @@
       "value": "on"
     },
     {
+      "name": "home_timeline_query_id",
+      "type": "text",
+      "prompt": "Advanced: For You Feed ID",
+      "placeholder": "Leave blank for bundled value",
+      "value": "7zlnp2TxC044W4C1ZUJMHw"
+    },
+    {
       "name": "home_latest_timeline_query_id",
       "type": "text",
       "prompt": "Advanced: Following Feed ID",
       "placeholder": "Leave blank for bundled value",
       "value": "BKB7oi212Fi7kQtCBGE4zA"
+    },
+    {
+      "name": "bookmarks_query_id",
+      "type": "text",
+      "prompt": "Advanced: Bookmarks ID",
+      "placeholder": "Leave blank for bundled value",
+      "value": "XD0ViOeSOW4YoeNTGjVaYw"
+    },
+    {
+      "name": "list_latest_tweets_timeline_query_id",
+      "type": "text",
+      "prompt": "Advanced: List Timeline ID",
+      "placeholder": "Leave blank for bundled value",
+      "value": "FVWmROVvhgjRPC-4jAUh8A"
+    },
+    {
+      "name": "notifications_timeline_query_id",
+      "type": "text",
+      "prompt": "Advanced: Mentions/Notifications ID",
+      "placeholder": "Leave blank for bundled value",
+      "value": "gzC0OYBCnfdYS4M4Gue7BA"
     },
     {
       "name": "search_query_id",
