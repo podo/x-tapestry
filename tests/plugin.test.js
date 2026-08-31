@@ -14,7 +14,9 @@ function readConnectorJson(fileName) {
 }
 
 function bodyWithoutConnectorStamp(body) {
-  return String(body || "").replace(/<!-- local\.x\.timeline [^>]+ -->$/, "");
+  return String(body || "")
+    .replace(/<p class="x-meta-(?:host|metrics)">[\s\S]*?<\/p>/g, "")
+    .replace(/<!-- local\.x\.timeline [^>]+ -->$/, "");
 }
 
 function regexFromPattern(pattern) {
@@ -458,8 +460,8 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 53);
-  assert.match(source, /connectorBuildId = "2026-08-31T21:02Z-thread-chronological"/);
+  assert.strictEqual(pluginConfig.version, 55);
+  assert.match(source, /connectorBuildId = "2026-08-31T21:25Z-card-order-meta-body"/);
   assert.strictEqual(pluginConfig.default_color, "slate");
   assert.match(source, /videoPreviewHtml/);
   assert.match(source, /embedTweetMediaThumbnails/);
@@ -576,12 +578,12 @@ async function run() {
     tweetId: "1950000000000000001",
     url: "https://x.com/openai/status/1950000000000000001"
   });
-  assert.match(item.actions._connectorBuild, /2026-08-31T21:02Z-thread-chronological@plugin53@1.4.2/);
+  assert.match(item.actions._connectorBuild, /2026-08-31T21:25Z-card-order-meta-body@plugin55@1.4.4/);
   assert.ok(item.actions._timelineAvatarRaw);
   assert.match(item.actions._authorAvatarInput, /^data:\d+$/);
   assert.match(item.actions._authorAvatarAssigned, /^data:\d+$/);
   assert.match(item.actions._authorAvatarLookup, /^(timeline|profile)\+embed$/);
-  assert.match(item.body, /<!-- local\.x\.timeline 2026-08-31T21:02Z-thread-chronological@plugin53@1.4.2 -->/);
+  assert.match(item.body, /<!-- local\.x\.timeline 2026-08-31T21:25Z-card-order-meta-body@plugin55@1.4.4 -->/);
   assert.ok(Number(item.actions._bodyAnchorCount) >= 1);
   assert.ok(Number(item.actions._externalUrlCount) >= 1);
   assert.match(item.actions._urlApi, /^(ok|missing)$/);
@@ -594,21 +596,27 @@ async function run() {
   assert.ok(articleLink, "expected LinkAttachment alongside media");
   assert.strictEqual(articleLink.url, "https://example.com/article");
   assert.ok(articleLink.title, "link card needs a visible title");
+  assert.match(item.body, /class="x-meta-host"/);
+  assert.match(item.body, /href="https:\/\/example\.com\/article"/);
   assert.ok(
-    item.annotations.some(annotation => annotation.uri === "https://example.com/article"),
-    "expected tappable link annotation"
+    !item.annotations || item.annotations.every(annotation => !/example\.com/.test(annotation.text || "")),
+    "link host should live in body meta, not annotations"
   );
   assert.ok(
-    item.annotations.some(annotation => (
-      annotation.text === "@openai" && annotation.uri === "https://x.com/openai"
-    )),
-    "expected tappable author annotation"
+    !item.annotations || !item.annotations.some(annotation => annotation.text === "@openai"),
+    "normal posts should not duplicate author as a small annotation chip"
   );
+  assert.strictEqual(item.author.username, "@openai");
   assert.match(item.author.uri, /https:\/\/x\.com\/openai/);
   assert.match(item.body, /href="https:\/\/example\.com\/article"/);
-  assert.match(item.annotations.find(annotation => /4 replies/.test(annotation.text)).text, /4 replies/);
-  assert.match(item.annotations.find(annotation => /4 replies/.test(annotation.text)).text, /12 likes/);
-  assert.match(item.annotations.find(annotation => /4 replies/.test(annotation.text)).text, /1,234 views/);
+  assert.match(item.body, /class="x-meta-metrics"/);
+  assert.match(item.body, /4 replies/);
+  assert.match(item.body, /12 likes/);
+  assert.match(item.body, /1,234 views/);
+  assert.ok(
+    !item.annotations || !item.annotations.some(annotation => /4 replies/.test(annotation.text || "")),
+    "metrics should live under author in body meta"
+  );
 
   const inlineFallback = makeContext({
     MediaAttachment: undefined,
@@ -1348,7 +1356,7 @@ async function run() {
   assert.match(modernNested.results[0].attachments[0].thumbnail, /^data:image\/jpeg;base64,/);
   assert.strictEqual(modernNested.results[0].attachments[0].aspectSize.width, 1920);
   assert.strictEqual(modernNested.results[0].attachments[0].aspectSize.height, 1080);
-  assert.match(modernNested.results[0].annotations.map(annotation => annotation.text).join(" "), /6 likes/);
+  assert.match(modernNested.results[0].body, /6 likes/);
 
   const nestedEntityLinks = tweetResult({
     id: "1950000000000000030",
@@ -1880,6 +1888,12 @@ async function run() {
   assert.ifError(repost.error);
   assert.strictEqual(repost.results[0].uri, "https://x.com/sama/status/1950000000000000013");
   assert.strictEqual(repost.results[0].date.toISOString(), "2026-08-29T08:00:00.000Z");
+  assert.strictEqual(repost.results[0].author.username, "@sama");
+  assert.strictEqual(repost.results[0].author.name, "Sam Altman");
+  assert.ok(
+    !repost.results[0].annotations.some(annotation => annotation.text === "@sama"),
+    "retweets should not add a duplicate original-author annotation chip"
+  );
   assert.strictEqual(repost.results[0].annotations.find(a => /Reposted/.test(a.text)).text, "@podo Reposted");
   assert.match(repost.results[0].annotations.find(a => /Reposted/.test(a.text)).icon, /^data:image\/jpeg;base64,/);
   assert.strictEqual(repost.results[0].annotations.find(a => /Reposted/.test(a.text)).uri, "https://x.com/podo");
@@ -1929,13 +1943,14 @@ async function run() {
     }
     return JSON.stringify({ data: {} });
   };
-  vm.runInContext("performAction('like', JSON.stringify({ tweetId: '1950000000000000001' }), { uri: 'https://x.com/openai/status/1950000000000000001', actions: { like: JSON.stringify({ tweetId: '1950000000000000001' }) }, annotations: [ { text: '4 replies - 3 reposts - 12 likes - 1,234 views' } ] })", likeContext);
+  vm.runInContext("performAction('like', JSON.stringify({ tweetId: '1950000000000000001' }), { uri: 'https://x.com/openai/status/1950000000000000001', actions: { like: JSON.stringify({ tweetId: '1950000000000000001' }) }, body: '<p class=\"x-meta-metrics\">4 replies - 3 reposts - 12 likes - 1,234 views</p><p>Hello</p>' })", likeContext);
   await settle();
   assert.ifError(likeContext.actionError);
   assert.ok(apiCall(likeContext, "FavoriteTweet"), "like action should call FavoriteTweet");
   assert.ok(likeContext.actionResult.actions.unlike);
   assert.ok(!likeContext.actionResult.actions.like);
-  assert.match(likeContext.actionResult.annotations[0].text, /13 likes/);
+  assert.match(likeContext.actionResult.body, /13 likes/);
+  assert.match(likeContext.actionResult.body, /class="x-meta-metrics"/);
 
   const bookmarkContext = makeContext();
   bookmarkContext.sendRequest = async (url, method, parameters, headers) => {
@@ -1953,7 +1968,7 @@ async function run() {
     }
     return JSON.stringify({ data: {} });
   };
-  vm.runInContext("performAction('bookmark', JSON.stringify({ tweetId: '1950000000000000001' }), { uri: 'https://x.com/openai/status/1950000000000000001', actions: { bookmark: JSON.stringify({ tweetId: '1950000000000000001' }) }, annotations: [ { text: '4 replies - 3 reposts - 12 likes - 1,234 views' } ] })", bookmarkContext);
+  vm.runInContext("performAction('bookmark', JSON.stringify({ tweetId: '1950000000000000001' }), { uri: 'https://x.com/openai/status/1950000000000000001', actions: { bookmark: JSON.stringify({ tweetId: '1950000000000000001' }) }, body: '<p class=\"x-meta-metrics\">4 replies - 3 reposts - 12 likes - 1,234 views</p><p>Hello</p>' })", bookmarkContext);
   await settle();
   assert.ifError(bookmarkContext.actionError);
   const createBookmarkCall = apiCall(bookmarkContext, "CreateBookmark");
@@ -1961,9 +1976,9 @@ async function run() {
   assert.match(createBookmarkCall.url, /aoDbu3RHznuiSkQ9aNM67Q\/CreateBookmark/);
   assert.ok(bookmarkContext.actionResult.actions.unbookmark);
   assert.ok(!bookmarkContext.actionResult.actions.bookmark);
-  assert.match(bookmarkContext.actionResult.annotations[0].text, /12 likes/);
+  assert.match(bookmarkContext.actionResult.body, /12 likes/);
 
-  vm.runInContext("performAction('unbookmark', JSON.stringify({ tweetId: '1950000000000000001' }), { uri: 'https://x.com/openai/status/1950000000000000001', actions: { unbookmark: JSON.stringify({ tweetId: '1950000000000000001' }) }, annotations: [ { text: '4 replies - 3 reposts - 12 likes - 1,234 views' } ] })", bookmarkContext);
+  vm.runInContext("performAction('unbookmark', JSON.stringify({ tweetId: '1950000000000000001' }), { uri: 'https://x.com/openai/status/1950000000000000001', actions: { unbookmark: JSON.stringify({ tweetId: '1950000000000000001' }) }, body: '<p class=\"x-meta-metrics\">4 replies - 3 reposts - 12 likes - 1,234 views</p><p>Hello</p>' })", bookmarkContext);
   await settle();
   assert.ifError(bookmarkContext.actionError);
   assert.ok(apiCall(bookmarkContext, "DeleteBookmark"), "unbookmark action should call DeleteBookmark");
@@ -2894,9 +2909,8 @@ async function run() {
     && attachment.url === "https://tecniq.co.uk/bespoke-project-q40-defender-by-tecniq/"
     && attachment.title
   )));
-  assert.ok(slashItem.annotations.some(annotation => (
-    annotation.uri === "https://tecniq.co.uk/bespoke-project-q40-defender-by-tecniq/"
-  )));
+  assert.ok(slashItem.body.includes("tecniq.co.uk") || slashItem.body.includes("href="), "host or link should appear in body");
+  assert.match(slashItem.body, /tecniq\.co\.uk|bespoke-project/);
   assert.deepStrictEqual(JSON.parse(slashItem.actions.openLink), {
     url: "https://tecniq.co.uk/bespoke-project-q40-defender-by-tecniq/"
   });
@@ -2929,9 +2943,14 @@ async function run() {
     && /^https:\/\/www\.newyorker\.com\//.test(attachment.url)
   )));
   assert.ok(nyItem.actions.openLink);
-  assert.ok(nyItem.annotations.some(annotation => (
-    annotation.uri && annotation.uri.indexOf("newyorker.com") >= 0
-  )));
+  assert.match(nyItem.body, /class="x-meta-host"/);
+  assert.match(nyItem.body, /newyorker\.com/);
+  assert.ok(
+    !nyItem.annotations || !nyItem.annotations.some(annotation => (
+      annotation.uri && annotation.uri.indexOf("newyorker.com") >= 0
+    )),
+    "article host should be body meta under author, not a top annotation"
+  );
 
   const xArticleUrl = makeContext({
     timeline: timelineBody([
@@ -2955,11 +2974,11 @@ async function run() {
     /href="https:\/\/x\.com\/i\/article\/2094340929800769536"/
   );
   assert.ok(
-    xArticleUrl.results[0].annotations.some(annotation => (
-      annotation.text === "@jeff_weinstein"
-      && annotation.uri === "https://x.com/jeff_weinstein"
-    ))
+    !(xArticleUrl.results[0].annotations || []).some(annotation => annotation.text === "@jeff_weinstein"),
+    "author handle should live on Identity, not a duplicate annotation"
   );
+  assert.strictEqual(xArticleUrl.results[0].author.username, "@jeff_weinstein");
+  assert.strictEqual(xArticleUrl.results[0].author.uri, "https://x.com/jeff_weinstein");
 
   const encodedAmpersand = makeContext({
     timeline: timelineBody([

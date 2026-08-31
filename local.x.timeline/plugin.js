@@ -27,9 +27,9 @@ const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xn
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
 const syncStateKey = "syncStateV20";
-const connectorBuildId = "2026-08-31T21:02Z-thread-chronological";
-const connectorRelease = "1.4.2";
-const connectorPluginVersion = 53;
+const connectorBuildId = "2026-08-31T21:25Z-card-order-meta-body";
+const connectorRelease = "1.4.4";
+const connectorPluginVersion = 55;
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
@@ -340,8 +340,29 @@ function updateItemEngagementState(item, actionId, tweetId) {
   }
 
   item.actions = actions;
-  item.annotations = adjustEngagementAnnotations(item.annotations, actionId);
+  item.body = adjustEngagementBodyMetrics(item.body, actionId);
   return item;
+}
+
+function adjustEngagementBodyMetrics(body, actionId) {
+  const html = String(body || "");
+  const match = html.match(/<p class="x-meta-metrics">([\s\S]*?)<\/p>/i);
+  if (!match) return body;
+
+  const metrics = parseMetricsAnnotation({ text: htmlDecode(match[1]) });
+  if (!metrics) return body;
+
+  if (actionId === "like") metrics.likes += 1;
+  else if (actionId === "unlike") metrics.likes = Math.max(0, metrics.likes - 1);
+  else if (actionId === "repost") metrics.reposts += 1;
+  else if (actionId === "unrepost") metrics.reposts = Math.max(0, metrics.reposts - 1);
+  else return body;
+
+  const nextText = metricsTextFromCounts(metrics);
+  if (!nextText) {
+    return html.replace(match[0], "");
+  }
+  return html.replace(match[0], `<p class="x-meta-metrics">${escapeHtml(nextText)}</p>`);
 }
 
 function adjustEngagementAnnotations(annotations, actionId) {
@@ -363,13 +384,16 @@ function adjustEngagementAnnotations(annotations, actionId) {
 function parseMetricsAnnotation(annotation) {
   if (!annotation || typeof annotation.text !== "string") return null;
   const text = annotation.text;
-  const metrics = { replies: 0, reposts: 0, likes: 0, views: 0, hasViews: false };
+  const metrics = { replies: 0, reposts: 0, quotes: 0, likes: 0, views: 0, hasViews: false };
 
   const replies = text.match(/([\d,.]+[KMB]?)\s+repl(?:y|ies)/i);
   if (replies) metrics.replies = parseCountToken(replies[1]);
 
   const reposts = text.match(/([\d,.]+[KMB]?)\s+reposts?/i);
   if (reposts) metrics.reposts = parseCountToken(reposts[1]);
+
+  const quotes = text.match(/([\d,.]+[KMB]?)\s+quotes?/i);
+  if (quotes) metrics.quotes = parseCountToken(quotes[1]);
 
   const likes = text.match(/([\d,.]+[KMB]?)\s+likes?/i);
   if (likes) metrics.likes = parseCountToken(likes[1]);
@@ -380,17 +404,22 @@ function parseMetricsAnnotation(annotation) {
     metrics.hasViews = true;
   }
 
-  if (!replies && !reposts && !likes && !views) return null;
+  if (!replies && !reposts && !quotes && !likes && !views) return null;
   return metrics;
 }
 
 function metricsAnnotationFromCounts(metrics) {
+  return Annotation.createWithText(metricsTextFromCounts(metrics));
+}
+
+function metricsTextFromCounts(metrics) {
   const details = [];
   if (metrics.replies > 0) details.push(`${formatCount(metrics.replies)} ${metrics.replies === 1 ? "reply" : "replies"}`);
   if (metrics.reposts > 0) details.push(`${formatCount(metrics.reposts)} reposts`);
+  if (metrics.quotes > 0) details.push(`${formatCount(metrics.quotes)} quotes`);
   if (metrics.likes > 0) details.push(`${formatCount(metrics.likes)} likes`);
   if (metrics.hasViews && metrics.views > 0) details.push(`${formatCount(metrics.views)} views`);
-  return Annotation.createWithText(details.join(" - "));
+  return details.join(" - ");
 }
 
 function parseCountToken(value) {
@@ -3494,6 +3523,7 @@ function tweetBody(tweet) {
   body = scrubMediaPlaceholderUrlsFromBody(body, tweet);
   body = forceLinkifyPlainUrlsInHtml(body);
   body += externalLinkBodySuffix(body, tweet);
+  body = tweetMetaHtml(tweet) + body;
   if (!inlineMediaFallbackNeeded(tweet)) return body;
 
   const media = tweet.media
@@ -3729,14 +3759,7 @@ function createIdentity(name, username, avatar, uri) {
 function tweetAnnotations(tweet) {
   const annotations = [];
 
-  // Tappable profile chip (header @username is often plain chrome; Annotation.uri is reliable).
-  if (tweet.authorUsername) {
-    const profile = Annotation.createWithText(`@${tweet.authorUsername}`);
-    profile.uri = `https://x.com/${tweet.authorUsername}`;
-    if (tweet.authorAvatar) profile.icon = tweet.authorAvatar;
-    annotations.push(profile);
-  }
-
+  // Loom renders native annotations above Service/Author. Keep only arrival context there.
   if (tweet.repostedByUsername || tweet.repostedByName) {
     const text = tweet.repostedByUsername
       ? `@${tweet.repostedByUsername} Reposted`
@@ -3752,27 +3775,32 @@ function tweetAnnotations(tweet) {
     if (tweet.replyToUsername) reply.uri = `https://x.com/${tweet.replyToUsername}`;
     annotations.push(reply);
   }
+  return annotations;
+}
 
-  // Threads pattern: Annotation.uri is a reliable tap target when body <a> is plain in Loom.
+function tweetMetaHtml(tweet) {
+  const blocks = [];
   ensureTweetExternalUrls(tweet);
   const article = articleUrlForTweet(tweet);
   if (isExternalWebUrl(article)) {
     const label = urlHost(article) || article;
-    const linkAnnotation = Annotation.createWithText(label);
-    linkAnnotation.uri = article;
-    annotations.push(linkAnnotation);
+    blocks.push(`<p class="x-meta-host">${linkedText(article, label)}</p>`);
   }
 
   if (showMetrics()) {
-    const details = [];
-    if (tweet.replies > 0) details.push(`${formatCount(tweet.replies)} replies`);
-    if (tweet.reposts > 0) details.push(`${formatCount(tweet.reposts)} reposts`);
-    if (tweet.quotes > 0) details.push(`${formatCount(tweet.quotes)} quotes`);
-    if (tweet.likes > 0) details.push(`${formatCount(tweet.likes)} likes`);
-    if (tweet.views > 0) details.push(`${formatCount(tweet.views)} views`);
-    if (details.length > 0) annotations.push(Annotation.createWithText(details.join(" - ")));
+    const metrics = {
+      replies: finiteNumber(tweet.replies),
+      reposts: finiteNumber(tweet.reposts),
+      quotes: finiteNumber(tweet.quotes),
+      likes: finiteNumber(tweet.likes),
+      views: finiteNumber(tweet.views),
+      hasViews: finiteNumber(tweet.views) > 0
+    };
+    const text = metricsTextFromCounts(metrics);
+    if (text) blocks.push(`<p class="x-meta-metrics">${escapeHtml(text)}</p>`);
   }
-  return annotations;
+
+  return blocks.join("");
 }
 
 function tweetAttachments(tweet) {

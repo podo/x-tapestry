@@ -4,6 +4,7 @@
 
 - Each item represents one X post and is ordered newest first by the post timestamp.
 - The author identity is always populated from the post author, including the X profile avatar when the payload provides one. Profile images from `pbs.twimg.com` are fetched during load and embedded as Base64 data URLs before assignment, because Loom 2.0.11 does not persist remote twimg URLs on native `Identity.avatar` even though assignment succeeds for `name`, `username`, and `uri`.
+- Card chrome order (Loom `post` style): native annotations only for **Reposted** and **Reply** (above Service); then Service → Author → body meta (link host + metrics) → caption → attachments → actions. Retweet Identity is the original author.
 - Native media attachments are emitted with the post: photos, videos, and animated GIFs retain their thumbnail, MIME type, dimensions, and alt text when available. Tapestry normally renders native attachments below the HTML body, and a post may contain up to four media attachments.
 - If a host runtime does not expose the native media constructors, the connector keeps a small escaped inline media fallback and leaves Tapestry's automatic attachment extraction enabled so the app can recover the image/video from the body.
 - A native poll is emitted as a poll attachment. A quoted post is emitted as a quoted item attachment after the parent post's media, poll, or link card.
