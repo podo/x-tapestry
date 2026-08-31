@@ -1,6 +1,31 @@
 {
   "items": [
     {
+      "id": "like",
+      "name": "Like",
+      "icon": "heart"
+    },
+    {
+      "id": "unlike",
+      "name": "Liked",
+      "icon": "heart.fill"
+    },
+    {
+      "id": "repost",
+      "name": "Repost",
+      "icon": "tapestry.boost"
+    },
+    {
+      "id": "unrepost",
+      "name": "Reposted",
+      "icon": "tapestry.boost.fill"
+    },
+    {
+      "id": "openLink",
+      "name": "Open Link",
+      "icon": "tapestry.open.original"
+    },
+    {
       "id": "thread",
       "name": "Thread",
       "icon": "bubble.left.and.bubble.right",

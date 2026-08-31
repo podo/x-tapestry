@@ -13,6 +13,10 @@ function readConnectorJson(fileName) {
   return JSON.parse(fs.readFileSync(path.join(connectorDir, fileName), "utf8"));
 }
 
+function bodyWithoutConnectorStamp(body) {
+  return String(body || "").replace(/<!-- local\.x\.timeline [^>]+ -->$/, "");
+}
+
 function regexFromPattern(pattern) {
   const lastSlash = pattern.lastIndexOf("/");
   return new RegExp(pattern.slice(1, lastSlash), pattern.slice(lastSlash + 1) || "i");
@@ -327,11 +331,33 @@ function makeContext(overrides = {}) {
     threadTimeline: null,
     linkPreviews: {},
     accountSettings: { screen_name: "podo", name: "Podo" },
-    sendRequest: async (url, method, parameters, headers) => {
-      calls.push({ url, method, parameters, headers });
+    sendRequest: async (url, method, parameters, headers, fullResponse) => {
+      calls.push({ url, method, parameters, headers, fullResponse });
+      if (url.includes("pbs.twimg.com/")) {
+        const body = String.fromCharCode(0xff, 0xd8, 0xff, 0xd9);
+        if (fullResponse) {
+          return JSON.stringify({
+            status: 200,
+            headers: { "content-type": "image/jpeg" },
+            url,
+            body
+          });
+        }
+        return body;
+      }
       if (url === "https://x.com/") return makeHomeHtml();
       if (url.includes("ondemand.s.abcdefa.js")) return ondemandJs;
       if (url.includes("/account/settings.json")) return JSON.stringify(context.accountSettings);
+      if (url.includes("/users/show.json")) {
+        const handle = new URL(url).searchParams.get("screen_name") || "openai";
+        return JSON.stringify(userProfileBody(handle).data.user.result.legacy
+          ? userProfileBody(handle).data.user.result
+          : {
+            screen_name: handle,
+            name: handle,
+            profile_image_url_https: `https://pbs.twimg.com/profile_images/${handle}_normal.jpg`
+          });
+      }
       if (Object.prototype.hasOwnProperty.call(context.linkPreviews, url)) return context.linkPreviews[url];
       if (/^https?:\/\//.test(url) && !/https:\/\/(x\.com|abs\.twimg\.com)\//.test(url)) {
         return "<html></html>";
@@ -360,8 +386,8 @@ function makeContext(overrides = {}) {
       createWithUriDate: (uri, date) => ({ uri, date })
     },
     Identity: {
-      create: () => { throw new Error("Identity.create should not be used for X item authors"); },
-      createWithName: name => ({ name })
+      createWithName: name => ({ name }),
+      create: (name, username, avatar, uri) => ({ name, username, avatar, uri })
     },
     Annotation: {
       createWithText: text => ({ text })
@@ -420,9 +446,23 @@ async function run() {
   const actions = readConnectorJson("actions.json");
   const apps = readConnectorJson("apps.json");
 
-  assert.strictEqual(pluginConfig.provides_attachments, false);
+  assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 13);
+  assert.strictEqual(pluginConfig.version, 39);
+  assert.match(source, /connectorBuildId = "2026-08-31T10:10Z-video-poster-link-fix"/);
+  assert.match(source, /videoPreviewHtml/);
+  assert.match(source, /embedTweetMediaThumbnails/);
+  assert.match(source, /mediaFromFxTwitterStatus/);
+  assert.match(source, /enrichTweetMedia/);
+  assert.match(source, /engagementActionsForTweet/);
+  assert.match(source, /FavoriteTweet/);
+  assert.match(source, /timelineAvatarFromHint/);
+  assert.match(source, /_timelineAvatarRaw/);
+  assert.match(source, /avatarFromXProfilePage/);
+  assert.match(source, /cardFromFxTwitterStatus/);
+  assert.match(source, /_linkCardLookup/);
+  assert.match(source, /subscriptions_feature_can_gift_premium/);
+  assert.match(source, /fxtwitter-no-creds/);
   const sourceModeInput = uiConfig.inputs.find(input => input.name === "source_mode");
   assert.ok(sourceModeInput.choices.includes("Following Feed"));
   assert.ok(sourceModeInput.choices.includes("Individual Accounts"));
@@ -438,6 +478,9 @@ async function run() {
   assert.ok(discovery.input.some(input => input.url === "https://x.com/$1"));
   assert.ok(suggestions.variables.some(variable => variable.title === "Following Feed"));
   assert.ok(suggestions.variables.some(variable => variable.title === "OpenAI + Sam"));
+  assert.ok(actions.items.some(action => action.id === "like" && action.icon === "heart"));
+  assert.ok(actions.items.some(action => action.id === "repost" && action.icon === "tapestry.boost"));
+  assert.ok(actions.items.some(action => action.id === "openLink" && action.icon === "tapestry.open.original"));
   assert.ok(actions.items.some(action => action.id === "thread" && action.role === "context"));
   assert.ok(apps.apps.some(app => app.name === "X" && app.template === "__URL__"));
   assert.strictEqual("@openai".match(regexFromPattern(discovery.input[0].match))[1], "openai");
@@ -450,7 +493,7 @@ async function run() {
   assert.ifError(context.error);
   assert.strictEqual(context.verification.displayName, "X - @openai, @sama");
   assert.strictEqual(context.verification.accountIdentity.username, "@podo");
-  assert.match(context.verification.accountIdentity.avatar, /podo_normal\.jpg$/);
+  assert.match(context.verification.accountIdentity.avatar, /^data:image\/jpeg;base64,/);
 
   const verifyProfileApi = apiCall(context, "UserByScreenName");
   assert.ok(verifyProfileApi, "verify should resolve configured handles");
@@ -480,11 +523,26 @@ async function run() {
   assert.strictEqual(item.author.name, "OpenAI");
   assert.strictEqual(item.author.username, "@openai");
   assert.strictEqual(item.author.uri, "https://x.com/openai");
-  assert.match(item.author.avatar, /openai_normal\.jpg$/);
+  assert.match(item.author.avatar, /^data:image\/jpeg;base64,/);
+  assert.deepStrictEqual(JSON.parse(item.actions.like), {
+    tweetId: "1950000000000000001",
+    url: "https://x.com/openai/status/1950000000000000001"
+  });
+  assert.deepStrictEqual(JSON.parse(item.actions.repost), {
+    tweetId: "1950000000000000001",
+    url: "https://x.com/openai/status/1950000000000000001"
+  });
+  assert.ok(!item.actions.openLink, "media posts should not expose openLink");
   assert.deepStrictEqual(JSON.parse(item.actions.thread), {
     tweetId: "1950000000000000001",
     url: "https://x.com/openai/status/1950000000000000001"
   });
+  assert.match(item.actions._connectorBuild, /2026-08-31T10:10Z-video-poster-link-fix@plugin39@1\.3\.34/);
+  assert.ok(item.actions._timelineAvatarRaw);
+  assert.match(item.actions._authorAvatarInput, /^data:\d+$/);
+  assert.match(item.actions._authorAvatarAssigned, /^data:\d+$/);
+  assert.match(item.actions._authorAvatarLookup, /^(timeline|profile)\+embed$/);
+  assert.match(item.body, /<!-- local\.x\.timeline 2026-08-31T10:10Z-video-poster-link-fix@plugin39@1\.3\.34 -->/);
   assert.strictEqual(item.attachments[0].url, "https://pbs.twimg.com/media/a.jpg");
   assert.strictEqual(item.attachments[0].mimeType, "image/jpeg");
   assert.strictEqual(item.attachments[0].text, "Alt text");
@@ -504,22 +562,22 @@ async function run() {
   assert.match(inlineFallback.results[0].body, /<img src="https:\/\/pbs\.twimg\.com\/media\/a\.jpg"/);
   assert.match(inlineFallback.results[0].body, /example\.com\/article/);
 
-  const constructorIdentity = makeContext({
+  const createWithNameIdentity = makeContext({
     Identity: {
-      create: (name, username, avatar, uri) => ({ name, username, avatar, uri })
+      createWithName: name => ({ name })
     }
   });
-  vm.runInContext("load()", constructorIdentity);
+  vm.runInContext("load()", createWithNameIdentity);
   await settle();
-  assert.ifError(constructorIdentity.error);
-  assert.deepStrictEqual(constructorIdentity.results[0].author, {
+  assert.ifError(createWithNameIdentity.error);
+  assert.deepStrictEqual(createWithNameIdentity.results[0].author, {
     name: "OpenAI",
     username: "@openai",
-    avatar: "https://pbs.twimg.com/profile_images/openai_normal.jpg",
+    avatar: "data:image/jpeg;base64,/9j/2Q==",
     uri: "https://x.com/openai"
   });
 
-  const initialState = JSON.parse(context._state.get("syncStateV13"));
+  const initialState = JSON.parse(context._state.get("syncStateV20"));
   assert.strictEqual(initialState.highWaterBySource["handle:openai"], "1950000000000000001");
   assert.strictEqual(initialState.highWaterBySource["handle:sama"], "1950000000000000001");
 
@@ -532,7 +590,7 @@ async function run() {
   assert.ifError(context.error);
   assert.strictEqual(context.results.length, 1);
   assert.strictEqual(context.results[0].uri, "https://x.com/openai/status/1950000000000000003");
-  const nextState = JSON.parse(context._state.get("syncStateV13"));
+  const nextState = JSON.parse(context._state.get("syncStateV20"));
   assert.strictEqual(nextState.highWaterBySource["handle:openai"], "1950000000000000003");
   assert.strictEqual(nextState.highWaterBySource["handle:sama"], "1950000000000000003");
 
@@ -621,7 +679,7 @@ async function run() {
   assert.ifError(following.error);
   assert.strictEqual(following.results.length, 1);
   assert.strictEqual(following.results[0].author.username, "@verge");
-  assert.strictEqual(following.results[0].author.avatar, "https://pbs.twimg.com/profile_images/7/verge_normal.jpg");
+  assert.match(following.results[0].author.avatar, /^data:image\/jpeg;base64,/);
   assert.strictEqual(following.results[0].attachments[0].kind, "link");
   assert.strictEqual(following.results[0].attachments[0].title, "Home feed story");
   assert.strictEqual(following.results[0].attachments[0].subtitle, "Rendered from webpage metadata");
@@ -629,7 +687,7 @@ async function run() {
   assert.strictEqual(following.results[0].attachments[0].image, "https://example.com/home.jpg");
   assert.strictEqual(following.results[0].attachments[0].aspectSize.width, 1200);
   assert.strictEqual(following.results[0].attachments[0].aspectSize.height, 675);
-  assert.strictEqual(following.results[0].body, "<p>Read</p>");
+  assert.strictEqual(bodyWithoutConnectorStamp(following.results[0].body), "<p>Read</p>");
   const homeLoadApi = apiCalls(following, "HomeLatestTimeline").pop();
   const homeLoadVariables = graphqlVariables(homeLoadApi);
   assert.strictEqual(homeLoadVariables.count, 20);
@@ -638,7 +696,7 @@ async function run() {
   assert.strictEqual(homeLoadVariables.requestContext, "launch");
   assert.strictEqual(homeLoadVariables.withCommunity, true);
   assert.strictEqual(homeLoadVariables.enableRanking, false);
-  assert.deepStrictEqual(JSON.parse(following._state.get("syncStateV13")).highWaterBySource.following, "1950000000000000022");
+  assert.deepStrictEqual(JSON.parse(following._state.get("syncStateV20")).highWaterBySource.following, "1950000000000000022");
 
   const wrapped = makeContext({
     timeline: timelineBody([{ tweet: tweetResult({ id: "1950000000000000004" }) }]),
@@ -684,9 +742,9 @@ async function run() {
   assert.strictEqual(linkCard.results[0].attachments[0].subtitle, "Card summary");
   assert.strictEqual(linkCard.results[0].attachments[0].siteName, "example.com");
   assert.strictEqual(linkCard.results[0].attachments[0].authorName, "Example Author");
-  assert.strictEqual(linkCard.results[0].attachments[0].image, "https://pbs.twimg.com/card_img/abc?format=jpg&name=large");
+  assert.match(linkCard.results[0].attachments[0].image, /^data:image\/jpeg;base64,/);
   assert.strictEqual(linkCard.results[0].attachments[0].aspectSize.width, 640);
-  assert.strictEqual(linkCard.results[0].body, "<p>Read this</p>");
+  assert.strictEqual(bodyWithoutConnectorStamp(linkCard.results[0].body), "<p>Read this</p>");
 
   const tweetCard = makeContext({
     timeline: timelineBody([
@@ -719,8 +777,8 @@ async function run() {
   assert.strictEqual(tweetCard.results[0].attachments[0].title, "Tweet card title");
   assert.strictEqual(tweetCard.results[0].attachments[0].subtitle, "Tweet card summary");
   assert.strictEqual(tweetCard.results[0].attachments[0].siteName, "Tweet Cards");
-  assert.strictEqual(tweetCard.results[0].attachments[0].image, "https://pbs.twimg.com/card_img/tweet-card?format=jpg&name=large");
-  assert.strictEqual(tweetCard.results[0].body, "<p>Read tweet card</p>");
+  assert.match(tweetCard.results[0].attachments[0].image, /^data:image\/jpeg;base64,/);
+  assert.strictEqual(bodyWithoutConnectorStamp(tweetCard.results[0].body), "<p>Read tweet card</p>");
 
   const unifiedCardJson = {
     type: "image_website",
@@ -774,9 +832,9 @@ async function run() {
   assert.strictEqual(unifiedCard.results[0].attachments[0].title, "Unified title");
   assert.strictEqual(unifiedCard.results[0].attachments[0].subtitle, "Unified summary");
   assert.strictEqual(unifiedCard.results[0].attachments[0].siteName, "Example Unified");
-  assert.strictEqual(unifiedCard.results[0].attachments[0].image, "https://pbs.twimg.com/card_img/unified?format=jpg&name=large");
+  assert.match(unifiedCard.results[0].attachments[0].image, /^data:image\/jpeg;base64,/);
   assert.strictEqual(unifiedCard.results[0].attachments[0].aspectSize.width, 1200);
-  assert.strictEqual(unifiedCard.results[0].body, "<p>Unified</p>");
+  assert.strictEqual(bodyWithoutConnectorStamp(unifiedCard.results[0].body), "<p>Unified</p>");
 
   const multiLinkCard = makeContext({
     timeline: timelineBody([
@@ -837,7 +895,7 @@ async function run() {
   assert.strictEqual(playerCard.results[0].attachments[0].title, "Player title");
   assert.strictEqual(playerCard.results[0].attachments[0].subtitle, "Player summary");
   assert.strictEqual(playerCard.results[0].attachments[0].aspectSize.height, 720);
-  assert.strictEqual(playerCard.results[0].body, "<p>Watch this</p>");
+  assert.strictEqual(bodyWithoutConnectorStamp(playerCard.results[0].body), "<p>Watch this</p>");
 
   const urlOnlyCard = makeContext({
     timeline: timelineBody([
@@ -913,7 +971,7 @@ async function run() {
   assert.strictEqual(previewAttachment.image, "https://example.com/preview.jpg");
   assert.strictEqual(previewAttachment.aspectSize.width, 1200);
   assert.strictEqual(previewAttachment.aspectSize.height, 630);
-  assert.strictEqual(unfurled.results[0].body, "<p>Read</p>");
+  assert.strictEqual(bodyWithoutConnectorStamp(unfurled.results[0].body), "<p>Read</p>");
   const previewCall = unfurled._calls.find(call => call.url === "https://example.com/preview");
   assert.ok(previewCall, "missing link preview should fetch the expanded URL");
   assert.ok(!previewCall.headers.Cookie, "external link preview requests must not include X cookies");
@@ -951,7 +1009,7 @@ async function run() {
   assert.ifError(video.error);
   assert.strictEqual(video.results[0].attachments[0].url, "https://video.twimg.com/a-832.mp4");
   assert.strictEqual(video.results[0].attachments[0].mimeType, "video/mp4");
-  assert.strictEqual(video.results[0].attachments[0].thumbnail, "https://pbs.twimg.com/ext_tw_video_thumb/a.jpg");
+  assert.match(video.results[0].attachments[0].thumbnail, /^data:image\/jpeg;base64,/);
   assert.strictEqual(video.results[0].attachments[0].aspectSize.width, 16);
   assert.strictEqual(video.results[0].attachments[0].aspectSize.height, 9);
 
@@ -983,7 +1041,7 @@ async function run() {
   assert.ifError(legacyMediaPlaceholder.error);
   assert.strictEqual(legacyMediaPlaceholder.results[0].attachments[0].url, "https://pbs.twimg.com/media/legacy?format=jpg&name=large");
   assert.strictEqual(legacyMediaPlaceholder.results[0].attachments[0].text, "Legacy photo");
-  assert.strictEqual(legacyMediaPlaceholder.results[0].body, "<p>Legacy photo</p>");
+  assert.strictEqual(bodyWithoutConnectorStamp(legacyMediaPlaceholder.results[0].body), "<p>Legacy photo</p>");
 
   const modernImage = makeContext({
     timeline: timelineBody([
@@ -1004,7 +1062,7 @@ async function run() {
   assert.strictEqual(modernImage.results[0].attachments[0].mimeType, "image/jpeg");
   assert.strictEqual(modernImage.results[0].attachments[0].text, "Modern image alt text");
   assert.strictEqual(modernImage.results[0].attachments[0].aspectSize.width, 1200);
-  assert.strictEqual(modernImage.results[0].body, "<p>Modern image</p>");
+  assert.strictEqual(bodyWithoutConnectorStamp(modernImage.results[0].body), "<p>Modern image</p>");
 
   const modernVideo = makeContext({
     timeline: timelineBody([
@@ -1026,9 +1084,9 @@ async function run() {
   await settle();
   assert.ifError(modernVideo.error);
   assert.strictEqual(modernVideo.results[0].attachments[0].url, "https://video.twimg.com/amplify_video/1/vid/avc1/1280x720/high.mp4");
-  assert.strictEqual(modernVideo.results[0].attachments[0].thumbnail, "https://pbs.twimg.com/amplify_video_thumb/1/img/thumb.jpg");
+  assert.match(modernVideo.results[0].attachments[0].thumbnail, /^data:image\/jpeg;base64,/);
   assert.strictEqual(modernVideo.results[0].attachments[0].mimeType, "video/mp4");
-  assert.strictEqual(modernVideo.results[0].body, "<p>Modern video</p>");
+  assert.match(bodyWithoutConnectorStamp(modernVideo.results[0].body), /^<p>Modern video<\/p><p><img src="data:image\/jpeg;base64,/);
 
   const modernNestedVideo = tweetResult({
     id: "1950000000000000028",
@@ -1095,10 +1153,10 @@ async function run() {
   assert.strictEqual(modernNested.results.length, 1);
   assert.strictEqual(modernNested.results[0].author.name, "Nested User");
   assert.strictEqual(modernNested.results[0].author.username, "@nesteduser");
-  assert.strictEqual(modernNested.results[0].author.avatar, "https://pbs.twimg.com/profile_images/9/nested_normal.jpg");
-  assert.strictEqual(modernNested.results[0].body, "<p>Nested video <a href=\"https://example.com/nested\">example.com/nested</a></p>");
+  assert.match(modernNested.results[0].author.avatar, /^data:image\/jpeg;base64,/);
+  assert.match(bodyWithoutConnectorStamp(modernNested.results[0].body), /^<p>Nested video <a href="https:\/\/example.com\/nested">example.com\/nested<\/a><\/p><p><img src="data:image\/jpeg;base64,/);
   assert.strictEqual(modernNested.results[0].attachments[0].url, "https://video.twimg.com/nested-high.mp4");
-  assert.strictEqual(modernNested.results[0].attachments[0].thumbnail, "https://pbs.twimg.com/amplify_video_thumb/9/nested.jpg");
+  assert.match(modernNested.results[0].attachments[0].thumbnail, /^data:image\/jpeg;base64,/);
   assert.strictEqual(modernNested.results[0].attachments[0].aspectSize.width, 1920);
   assert.strictEqual(modernNested.results[0].attachments[0].aspectSize.height, 1080);
   assert.match(modernNested.results[0].annotations.map(annotation => annotation.text).join(" "), /6 likes/);
@@ -1142,7 +1200,7 @@ async function run() {
   vm.runInContext("load()", nestedEntityContext);
   await settle();
   assert.ifError(nestedEntityContext.error);
-  assert.strictEqual(nestedEntityContext.results[0].body, "<p>Details entity link</p>");
+  assert.strictEqual(bodyWithoutConnectorStamp(nestedEntityContext.results[0].body), "<p>Details entity link</p>");
   assert.strictEqual(nestedEntityContext.results[0].attachments[0].kind, "link");
   assert.strictEqual(nestedEntityContext.results[0].attachments[0].url, "https://example.org/details");
 
@@ -1173,7 +1231,7 @@ async function run() {
   vm.runInContext("load()", mediaEntitySource);
   await settle();
   assert.ifError(mediaEntitySource.error);
-  assert.strictEqual(mediaEntitySource.results[0].body, "<p>Baby elephant</p>");
+  assert.strictEqual(bodyWithoutConnectorStamp(mediaEntitySource.results[0].body), "<p>Baby elephant</p>");
   assert.strictEqual(mediaEntitySource.results[0].attachments[0].url, "https://pbs.twimg.com/media/elephant.jpg");
 
   const queryAvatar = makeContext({
@@ -1187,7 +1245,7 @@ async function run() {
   vm.runInContext("load()", queryAvatar);
   await settle();
   assert.ifError(queryAvatar.error);
-  assert.strictEqual(queryAvatar.results[0].author.avatar, "https://pbs.twimg.com/profile_images/1/avatar.jpg?format=jpg&name=normal");
+  assert.match(queryAvatar.results[0].author.avatar, /^data:image\/jpeg;base64,/);
 
   const queryAvatarWithoutExtension = makeContext({
     timeline: timelineBody([
@@ -1200,7 +1258,7 @@ async function run() {
   vm.runInContext("load()", queryAvatarWithoutExtension);
   await settle();
   assert.ifError(queryAvatarWithoutExtension.error);
-  assert.strictEqual(queryAvatarWithoutExtension.results[0].author.avatar, "https://pbs.twimg.com/profile_images/1/avatar?format=jpg&name=normal");
+  assert.match(queryAvatarWithoutExtension.results[0].author.avatar, /^data:image\/jpeg;base64,/);
 
   const modernAvatar = makeContext({
     timeline: timelineBody([
@@ -1214,7 +1272,42 @@ async function run() {
   vm.runInContext("load()", modernAvatar);
   await settle();
   assert.ifError(modernAvatar.error);
-  assert.strictEqual(modernAvatar.results[0].author.avatar, "https://pbs.twimg.com/profile_images/2/modern.jpg");
+  assert.match(modernAvatar.results[0].author.avatar, /^data:image\/jpeg;base64,/);
+
+  const typedOnlyAvatar = makeContext({
+    timeline: timelineBody([
+      {
+        rest_id: "1950000000000000040",
+        legacy: {
+          id_str: "1950000000000000040",
+          full_text: "Typed user shape only",
+          created_at: "Fri Aug 28 08:00:00 +0000 2026",
+          entities: { urls: [] },
+          extended_entities: { media: [] }
+        },
+        core: {
+          user_results: {
+            result: {
+              __typename: "User",
+              rest_id: "typeduser-id",
+              core: {
+                screen_name: "typeduser",
+                name: "Typed User"
+              },
+              avatar: {
+                image_url: "https://pbs.twimg.com/profile_images/40/typeduser_normal.jpg"
+              }
+            }
+          }
+        }
+      }
+    ])
+  });
+  vm.runInContext("load()", typedOnlyAvatar);
+  await settle();
+  assert.ifError(typedOnlyAvatar.error);
+  assert.match(typedOnlyAvatar.results[0].author.avatar, /^data:image\/jpeg;base64,/);
+  assert.match(typedOnlyAvatar.results[0].actions._authorAvatarLookup, /^timeline\+embed$/);
 
   const liveShapedAvatar = tweetResult({
     id: "1950000000000000031",
@@ -1241,10 +1334,238 @@ async function run() {
   vm.runInContext("load()", liveShapedContext);
   await settle();
   assert.ifError(liveShapedContext.error);
-  assert.strictEqual(
+  assert.match(
     liveShapedContext.results[0].author.avatar,
-    "https://pbs.twimg.com/profile_images/31/liveuser_normal.jpg"
+    /^data:image\/jpeg;base64,/
   );
+
+  const httpAvatar = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000032",
+        profile_image_url: "http://pbs.twimg.com/profile_images/32/httpuser_normal.jpg"
+      })
+    ])
+  });
+  vm.runInContext("load()", httpAvatar);
+  await settle();
+  assert.ifError(httpAvatar.error);
+  assert.match(
+    httpAvatar.results[0].author.avatar,
+    /^data:image\/jpeg;base64,/
+  );
+
+  const loomCreateIgnoresAvatar = makeContext({
+    Identity: {
+      createWithName: name => ({ name }),
+      create: (name, username, avatar, uri) => ({ name, username, avatar, uri })
+    }
+  });
+  vm.runInContext("load()", loomCreateIgnoresAvatar);
+  await settle();
+  assert.ifError(loomCreateIgnoresAvatar.error);
+  assert.match(
+    loomCreateIgnoresAvatar.results[0].author.avatar,
+    /^data:image\/jpeg;base64,/
+  );
+
+  const protocolRelativeAvatar = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000034",
+        profile_image_url: "//pbs.twimg.com/profile_images/34/protocol_normal.jpg"
+      })
+    ])
+  });
+  vm.runInContext("load()", protocolRelativeAvatar);
+  await settle();
+  assert.ifError(protocolRelativeAvatar.error);
+  assert.match(
+    protocolRelativeAvatar.results[0].author.avatar,
+    /^data:image\/jpeg;base64,/
+  );
+
+  const schemelessTwimgAvatar = makeContext({
+    timeline: timelineBody([
+      {
+        rest_id: "1950000000000000042",
+        legacy: {
+          id_str: "1950000000000000042",
+          full_text: "Scheme-less twimg profile URL",
+          created_at: "Fri Aug 28 08:00:00 +0000 2026",
+          entities: { urls: [] },
+          extended_entities: { media: [] }
+        },
+        core: {
+          user_results: {
+            result: {
+              rest_id: "schemeless-id",
+              legacy: {
+                screen_name: "schemeless",
+                name: "Scheme Less",
+                profile_image_url_https: "pbs.twimg.com/profile_images/42/schemeless_normal.jpg"
+              }
+            }
+          }
+        }
+      }
+    ])
+  });
+  vm.runInContext("load()", schemelessTwimgAvatar);
+  await settle();
+  assert.ifError(schemelessTwimgAvatar.error);
+  assert.match(schemelessTwimgAvatar.results[0].author.avatar, /^data:image\/jpeg;base64,/);
+  assert.match(schemelessTwimgAvatar.results[0].actions._authorAvatarLookup, /^timeline\+embed$/);
+
+  const wrappedLegacyAvatar = makeContext({
+    timeline: timelineBody([
+      {
+        rest_id: "1950000000000000043",
+        legacy: {
+          id_str: "1950000000000000043",
+          full_text: "Legacy avatar on wrapper",
+          created_at: "Fri Aug 28 08:00:00 +0000 2026",
+          entities: { urls: [] },
+          extended_entities: { media: [] }
+        },
+        core: {
+          user_results: {
+            result: {
+              rest_id: "wrapped-id",
+              core: { screen_name: "wrapped", name: "Wrapped User" },
+              legacy: { screen_name: "wrapped", name: "Wrapped User" }
+            },
+            legacy: {
+              profile_image_url_https: "https://pbs.twimg.com/profile_images/43/wrapped_normal.jpg"
+            }
+          }
+        }
+      }
+    ])
+  });
+  vm.runInContext("load()", wrappedLegacyAvatar);
+  await settle();
+  assert.ifError(wrappedLegacyAvatar.error);
+  assert.match(wrappedLegacyAvatar.results[0].author.avatar, /^data:image\/jpeg;base64,/);
+
+  const objectLegacyAvatar = makeContext({
+    timeline: timelineBody([
+      {
+        rest_id: "1950000000000000044",
+        legacy: {
+          id_str: "1950000000000000044",
+          full_text: "Object-shaped legacy profile image",
+          created_at: "Fri Aug 28 08:00:00 +0000 2026",
+          entities: { urls: [] },
+          extended_entities: { media: [] }
+        },
+        core: {
+          user_results: {
+            result: {
+              rest_id: "object-id",
+              core: { screen_name: "objectpi", name: "Object Pi" },
+              legacy: {
+                screen_name: "objectpi",
+                name: "Object Pi",
+                profile_image_url_https: {
+                  image_url: "https://pbs.twimg.com/profile_images/44/objectpi_normal.jpg"
+                }
+              }
+            }
+          }
+        }
+      }
+    ])
+  });
+  vm.runInContext("load()", objectLegacyAvatar);
+  await settle();
+  assert.ifError(objectLegacyAvatar.error);
+  assert.match(objectLegacyAvatar.results[0].author.avatar, /^data:image\/jpeg;base64,/);
+
+  const rawHintRecovery = makeContext({
+    timeline: timelineBody([
+      {
+        rest_id: "1950000000000000046",
+        legacy: {
+          id_str: "1950000000000000046",
+          full_text: "Recover avatar from timeline raw hint",
+          created_at: "Fri Aug 28 08:00:00 +0000 2026",
+          entities: { urls: [] },
+          extended_entities: { media: [] }
+        },
+        core: {
+          user_results: {
+            result: {
+              rest_id: "tibo-id",
+              core: { screen_name: "thsottiaux", name: "Tibo" },
+              legacy: { screen_name: "thsottiaux", name: "Tibo" }
+            },
+            legacy: {
+              profile_image_url_https: "https://pbs.twimg.com/profile_images/2093807917833281537/2yBgpwVV_normal.jpg"
+            }
+          }
+        }
+      }
+    ])
+  });
+  vm.runInContext("load()", rawHintRecovery);
+  await settle();
+  assert.ifError(rawHintRecovery.error);
+  assert.match(rawHintRecovery.results[0].author.avatar, /^data:image\/jpeg;base64,/);
+  assert.match(rawHintRecovery.results[0].actions._authorAvatarLookup, /^timeline\+embed$/);
+  assert.match(
+    rawHintRecovery.results[0].actions._timelineAvatarRaw,
+    /profile_images\/2093807917833281537\/2yBgpwVV_normal\.jpg/
+  );
+
+  const ignoredAssignmentIdentity = makeContext({
+    Identity: {
+      createWithName: name => {
+        const identity = { name };
+        Object.defineProperty(identity, "avatar", {
+          configurable: true,
+          enumerable: true,
+          get() {
+            return null;
+          },
+          set() {}
+        });
+        return identity;
+      }
+    }
+  });
+  vm.runInContext("load()", ignoredAssignmentIdentity);
+  await settle();
+  assert.ifError(ignoredAssignmentIdentity.error);
+  assert.ok(!ignoredAssignmentIdentity.results[0].author.avatar);
+
+  const unavailableUser = makeContext({
+    timeline: timelineBody([
+      {
+        rest_id: "1950000000000000033",
+        legacy: {
+          id_str: "1950000000000000033",
+          full_text: "Suspended author",
+          created_at: "Fri Aug 28 08:00:00 +0000 2026",
+          entities: { urls: [] },
+          extended_entities: { media: [] }
+        },
+        core: {
+          user_results: {
+            result: {
+              __typename: "UserUnavailable",
+              message: "User is suspended"
+            }
+          }
+        }
+      }
+    ])
+  });
+  vm.runInContext("load()", unavailableUser);
+  await settle();
+  assert.ifError(unavailableUser.error);
+  assert.strictEqual(unavailableUser.results[0].author.name, "X");
+  assert.ok(!unavailableUser.results[0].author.avatar);
 
   const quoted = makeContext({
     timeline: timelineBody([
@@ -1269,6 +1590,7 @@ async function run() {
   assert.ifError(quoted.error);
   assert.strictEqual(quoted.results[0].attachments[0].uri, "https://x.com/sama/status/1950000000000000009");
   assert.strictEqual(quoted.results[0].attachments[0].author.username, "@sama");
+  assert.match(quoted.results[0].attachments[0].author.avatar, /^data:image\/jpeg;base64,/);
   assert.match(quoted.results[0].attachments[0].body, /Quoted text/);
   assert.doesNotMatch(quoted.results[0].body, /Quoted text/);
 
@@ -1319,6 +1641,26 @@ async function run() {
   assert.match(replySensitive.results[0].body, /href="https:\/\/x\.com\/search\?q=%24OPENAI">\$OPENAI<\/a>/);
   assert.strictEqual(replySensitive.results[0].annotations[0].text, "Reply to @sama");
 
+  const replyMentions = makeContext({
+    include_replies: "on",
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000016",
+        fullText: "@ndrewpignanelli @kayacancode Users may not, but for audit purposes there needs to be UI for it.",
+        in_reply_to_status_id_str: "1950000000000000010",
+        in_reply_to_screen_name: "ndrewpignanelli",
+        legacy: { extended_entities: { media: [] }, entities: { urls: [] } }
+      })
+    ])
+  });
+  vm.runInContext("load()", replyMentions);
+  await settle();
+  assert.ifError(replyMentions.error);
+  assert.match(replyMentions.results[0].body, /Users may not, but for audit purposes/);
+  assert.doesNotMatch(replyMentions.results[0].body, /@ndrewpignanelli/);
+  assert.doesNotMatch(replyMentions.results[0].body, /@kayacancode/);
+  assert.strictEqual(replyMentions.results[0].annotations[0].text, "Reply to @ndrewpignanelli");
+
   const repost = makeContext({
     include_retweets: "on",
     timeline: timelineBody([
@@ -1347,6 +1689,7 @@ async function run() {
   assert.strictEqual(repost.results[0].uri, "https://x.com/sama/status/1950000000000000013");
   assert.strictEqual(repost.results[0].date.toISOString(), "2026-08-29T08:00:00.000Z");
   assert.strictEqual(repost.results[0].annotations[0].text, "@podo Reposted");
+  assert.match(repost.results[0].annotations[0].icon, /^data:image\/jpeg;base64,/);
   assert.strictEqual(repost.results[0].annotations[0].uri, "https://x.com/podo");
 
   const threadContext = makeContext({
@@ -1363,6 +1706,27 @@ async function run() {
   assert.ok(threadApi, "thread action should call TweetDetail");
   const threadVariables = JSON.parse(new URL(threadApi.url).searchParams.get("variables"));
   assert.strictEqual(threadVariables.focalTweetId, "1950000000000000014");
+
+  const likeContext = makeContext();
+  likeContext.sendRequest = async (url, method, parameters, headers) => {
+    likeContext._calls.push({ url, method, parameters, headers });
+    if (url === "https://x.com/") return makeHomeHtml();
+    if (url.includes("ondemand.s.abcdefa.js")) return ondemandJs;
+    const action = graphqlAction(url);
+    if (action === "UserByScreenName") return JSON.stringify(userProfileBody("openai"));
+    if (action === "UserTweets") return JSON.stringify(homeTimelineBody([tweetResult()]));
+    if (action === "FavoriteTweet") {
+      return JSON.stringify({ data: { favorite_tweet: "Done" } });
+    }
+    return JSON.stringify({ data: {} });
+  };
+  vm.runInContext("performAction('like', JSON.stringify({ tweetId: '1950000000000000001' }), { uri: 'https://x.com/openai/status/1950000000000000001', actions: { like: JSON.stringify({ tweetId: '1950000000000000001' }) }, annotations: [ { text: '4 replies - 3 reposts - 12 likes - 1,234 views' } ] })", likeContext);
+  await settle();
+  assert.ifError(likeContext.actionError);
+  assert.ok(apiCall(likeContext, "FavoriteTweet"), "like action should call FavoriteTweet");
+  assert.ok(likeContext.actionResult.actions.unlike);
+  assert.ok(!likeContext.actionResult.actions.like);
+  assert.match(likeContext.actionResult.annotations[0].text, /13 likes/);
 
   const cookieOnly = makeContext({
     auth_token: "",
@@ -1433,11 +1797,23 @@ async function run() {
     x_sources: "from:openai"
   });
   let attempts = 0;
-  retry.sendRequest = async (url, method, parameters, headers) => {
-    retry._calls.push({ url, method, parameters, headers });
+  retry.sendRequest = async (url, method, parameters, headers, fullResponse) => {
+    retry._calls.push({ url, method, parameters, headers, fullResponse });
     if (url === "https://x.com/") return makeHomeHtml();
     if (url.includes("ondemand.s.abcdefa.js")) return ondemandJs;
     if (url.includes("/account/settings.json")) return JSON.stringify(retry.accountSettings);
+    if (url.includes("pbs.twimg.com/profile_images/")) {
+      const body = String.fromCharCode(0xff, 0xd8, 0xff, 0xd9);
+      if (fullResponse) {
+        return JSON.stringify({
+          status: 200,
+          headers: { "content-type": "image/jpeg" },
+          url,
+          body
+        });
+      }
+      return body;
+    }
     attempts += 1;
     if (attempts === 1) {
       return JSON.stringify({ errors: [{ code: 344, message: "You have reached your daily limit" }] });
@@ -1448,6 +1824,619 @@ async function run() {
   await settle();
   assert.ifError(retry.error);
   assert.strictEqual(attempts, 2);
+
+  const profileRestFallback = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000035",
+        username: "restonly",
+        name: "Rest Only",
+        profile_image_url: ""
+      })
+    ])
+  });
+  const sparseUserTweet = tweetResult({
+    id: "1950000000000000035",
+    username: "restonly",
+    name: "Rest Only",
+    profile_image_url: ""
+  });
+  sparseUserTweet.core = {
+    user_results: {
+      result: {
+        rest_id: "restonly-id",
+        core: { screen_name: "restonly", name: "Rest Only" },
+        legacy: { screen_name: "restonly", name: "Rest Only" }
+      }
+    }
+  };
+  profileRestFallback.timeline = timelineBody([{ tweet: sparseUserTweet }]);
+  const profileRestFallbackRequest = profileRestFallback.sendRequest;
+  profileRestFallback.sendRequest = async (url, method, parameters, headers, fullResponse) => {
+    if (graphqlAction(url) === "UserByScreenName") {
+      const variables = graphqlVariables({ url, parameters });
+      return JSON.stringify({
+        data: {
+          user: {
+            result: {
+              rest_id: "restonly-id",
+              core: {
+                screen_name: variables.screen_name,
+                name: "Rest Only"
+              },
+              legacy: {
+                screen_name: variables.screen_name,
+                name: "Rest Only"
+              }
+            }
+          }
+        }
+      });
+    }
+    if (graphqlAction(url) === "UserByRestId") {
+      return JSON.stringify({
+        data: {
+          user: {
+            result: {
+              rest_id: "restonly-id",
+              core: {
+                screen_name: "restonly",
+                name: "Rest Only"
+              },
+              legacy: {
+                screen_name: "restonly",
+                name: "Rest Only",
+                profile_image_url_https: "https://pbs.twimg.com/profile_images/35/restonly_normal.jpg"
+              }
+            }
+          }
+        }
+      });
+    }
+    return profileRestFallbackRequest(url, method, parameters, headers, fullResponse);
+  };
+  vm.runInContext("load()", profileRestFallback);
+  await settle();
+  assert.ifError(profileRestFallback.error);
+  assert.match(profileRestFallback.results[0].author.avatar, /^data:image\/jpeg;base64,/);
+  assert.strictEqual(
+    profileRestFallback.results[0].actions._authorAvatarLookup,
+    "profile+restid+embed"
+  );
+
+  const fxTwitterFallback = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000041",
+        username: "reuters",
+        name: "Reuters",
+        profile_image_url: ""
+      })
+    ])
+  });
+  const sparseFxTweet = tweetResult({
+    id: "1950000000000000041",
+    username: "reuters",
+    name: "Reuters",
+    profile_image_url: ""
+  });
+  sparseFxTweet.core = {
+    user_results: {
+      result: {
+        rest_id: "reuters-id",
+        core: { screen_name: "reuters", name: "Reuters" },
+        legacy: { screen_name: "reuters", name: "Reuters" }
+      }
+    }
+  };
+  fxTwitterFallback.timeline = timelineBody([{ tweet: sparseFxTweet }]);
+  const fxTwitterFallbackRequest = fxTwitterFallback.sendRequest;
+  fxTwitterFallback.sendRequest = async (url, method, parameters, headers, fullResponse) => {
+    if (String(url).includes("api.fxtwitter.com/2/profile/reuters")) {
+      const payload = JSON.stringify({
+        code: 200,
+        user: {
+          avatar_url: "https://pbs.twimg.com/profile_images/41/reuters_normal.jpg"
+        }
+      });
+      if (fullResponse) {
+        return JSON.stringify({ status: 200, headers: { "content-type": "application/json" }, body: payload });
+      }
+      return payload;
+    }
+    if (String(url) === "https://x.com/reuters") {
+      return fullResponse
+        ? JSON.stringify({ status: 404, headers: {}, body: "" })
+        : "";
+    }
+    if (graphqlAction(url) === "UserByScreenName") {
+      const variables = graphqlVariables({ url, parameters });
+      return JSON.stringify({
+        data: {
+          user: {
+            result: {
+              rest_id: "reuters-id",
+              core: {
+                screen_name: variables.screen_name,
+                name: "Reuters"
+              },
+              legacy: {
+                screen_name: variables.screen_name,
+                name: "Reuters"
+              }
+            }
+          }
+        }
+      });
+    }
+    if (graphqlAction(url) === "UserByRestId") {
+      return JSON.stringify({
+        data: {
+          user: {
+            result: {
+              rest_id: "reuters-id",
+              core: {
+                screen_name: "reuters",
+                name: "Reuters"
+              },
+              legacy: {
+                screen_name: "reuters",
+                name: "Reuters"
+              }
+            }
+          }
+        }
+      });
+    }
+    return fxTwitterFallbackRequest(url, method, parameters, headers, fullResponse);
+  };
+  vm.runInContext("load()", fxTwitterFallback);
+  await settle();
+  assert.ifError(fxTwitterFallback.error);
+  assert.match(fxTwitterFallback.results[0].author.avatar, /^data:image\/jpeg;base64,/);
+  assert.strictEqual(
+    fxTwitterFallback.results[0].actions._authorAvatarLookup,
+    "profile+fxtwitter+embed"
+  );
+
+  const xcomFallback = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000045",
+        username: "xcomuser",
+        name: "Xcom User",
+        profile_image_url: ""
+      })
+    ])
+  });
+  const sparseXcomTweet = tweetResult({
+    id: "1950000000000000045",
+    username: "xcomuser",
+    name: "Xcom User",
+    profile_image_url: ""
+  });
+  sparseXcomTweet.core = {
+    user_results: {
+      result: {
+        rest_id: "xcomuser-id",
+        core: { screen_name: "xcomuser", name: "Xcom User" },
+        legacy: { screen_name: "xcomuser", name: "Xcom User" }
+      }
+    }
+  };
+  xcomFallback.timeline = timelineBody([{ tweet: sparseXcomTweet }]);
+  const xcomFallbackRequest = xcomFallback.sendRequest;
+  xcomFallback.sendRequest = async (url, method, parameters, headers, fullResponse) => {
+    if (String(url) === "https://x.com/xcomuser") {
+      const body = "<html><script>\"profile_image_url_https\":\"https://pbs.twimg.com/profile_images/45/xcomuser_normal.jpg\"</script></html>";
+      return fullResponse
+        ? JSON.stringify({ status: 200, headers: { "content-type": "text/html" }, body })
+        : body;
+    }
+    if (graphqlAction(url) === "UserByScreenName") {
+      return JSON.stringify({
+        data: {
+          user: {
+            result: {
+              rest_id: "xcomuser-id",
+              core: { screen_name: "xcomuser", name: "Xcom User" },
+              legacy: { screen_name: "xcomuser", name: "Xcom User" }
+            }
+          }
+        }
+      });
+    }
+    if (graphqlAction(url) === "UserByRestId") {
+      return JSON.stringify({
+        data: {
+          user: {
+            result: {
+              rest_id: "xcomuser-id",
+              core: { screen_name: "xcomuser", name: "Xcom User" },
+              legacy: { screen_name: "xcomuser", name: "Xcom User" }
+            }
+          }
+        }
+      });
+    }
+    return xcomFallbackRequest(url, method, parameters, headers, fullResponse);
+  };
+  vm.runInContext("load()", xcomFallback);
+  await settle();
+  assert.ifError(xcomFallback.error);
+  assert.match(xcomFallback.results[0].author.avatar, /^data:image\/jpeg;base64,/);
+  assert.strictEqual(
+    xcomFallback.results[0].actions._authorAvatarLookup,
+    "profile+xcom+embed"
+  );
+
+  const fxTwitterCard = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000047",
+        username: "Reuters",
+        name: "Reuters",
+        fullText: "Shares skid in Asia https://reut.rs/4wTZwhv https://reut.rs/4wTZwhv",
+        legacy: {
+          entities: {
+            urls: [
+              urlEntity("https://t.co/abc", "https://reut.rs/4wTZwhv", "reut.rs/4wTZwhv")
+            ]
+          },
+          extended_entities: { media: [] }
+        }
+      })
+    ])
+  });
+  const fxTwitterCardRequest = fxTwitterCard.sendRequest;
+  fxTwitterCard.sendRequest = async (url, method, parameters, headers, fullResponse) => {
+    if (String(url).includes("api.fxtwitter.com/Reuters/status/1950000000000000047")) {
+      const payload = JSON.stringify({
+        code: 200,
+        tweet: {
+          card: {
+            url: "https://reut.rs/4wTZwhv",
+            title: "Shares skid in Asia as oil climbs, yields stay high",
+            description: "Share markets slid on Monday in Asia.",
+            domain: "www.reuters.com",
+            image: {
+              width: 800,
+              height: 419,
+              url: "https://pbs.twimg.com/card_img/47/reuters_card?format=jpg&name=800x419"
+            }
+          }
+        }
+      });
+      return fullResponse
+        ? JSON.stringify({ status: 200, headers: { "content-type": "application/json" }, body: payload })
+        : payload;
+    }
+    if (String(url).includes("api.fxtwitter.com/2/profile/")) {
+      return fullResponse
+        ? JSON.stringify({ status: 404, headers: {}, body: "{}" })
+        : "{}";
+    }
+    if (graphqlAction(url) === "TweetDetail") {
+      return JSON.stringify({ data: { threaded_conversation_with_injections_v2: { instructions: [] } } });
+    }
+    return fxTwitterCardRequest(url, method, parameters, headers, fullResponse);
+  };
+  vm.runInContext("load()", fxTwitterCard);
+  await settle();
+  assert.ifError(fxTwitterCard.error);
+  assert.strictEqual(fxTwitterCard.results[0].attachments[0].kind, "link");
+  assert.strictEqual(
+    fxTwitterCard.results[0].attachments[0].title,
+    "Shares skid in Asia as oil climbs, yields stay high"
+  );
+  assert.match(fxTwitterCard.results[0].attachments[0].image, /^data:image\/jpeg;base64,/);
+  assert.strictEqual(fxTwitterCard.results[0].actions._linkCardLookup, "fxtwitter");
+  assert.strictEqual(fxTwitterCard.results[0].actions._linkCardInput, "title+subtitle+image-data+site");
+  assert.deepStrictEqual(JSON.parse(fxTwitterCard.results[0].actions.openLink), {
+    url: "https://reut.rs/4wTZwhv"
+  });
+  assert.doesNotMatch(fxTwitterCard.results[0].body, /reut\.rs\/4wTZwhv/);
+
+  const fxTwitterVideo = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000048",
+        username: "Rainmaker1973",
+        name: "Massimo",
+        fullText: "Scottish dress [📹andythehighlander] https://t.co/s7SoN2UbKY",
+        legacy: {
+          entities: {
+            urls: [
+              urlEntity("https://t.co/s7SoN2UbKY", "https://x.com/Rainmaker1973/status/1950000000000000048/video/1", "t.co/s7SoN2UbKY")
+            ]
+          },
+          extended_entities: { media: [] }
+        }
+      })
+    ])
+  });
+  const fxTwitterVideoRequest = fxTwitterVideo.sendRequest;
+  fxTwitterVideo.sendRequest = async (url, method, parameters, headers, fullResponse) => {
+    if (String(url).includes("api.fxtwitter.com/Rainmaker1973/status/1950000000000000048")) {
+      const payload = JSON.stringify({
+        code: 200,
+        tweet: {
+          media: {
+            videos: [
+              {
+                type: "video",
+                url: "https://video.twimg.com/amplify_video/48/vid/avc1/720x1280/high.mp4",
+                thumbnail_url: "https://pbs.twimg.com/amplify_video_thumb/48/img/thumb.jpg",
+                width: 720,
+                height: 1280,
+                format: "video/mp4"
+              }
+            ]
+          }
+        }
+      });
+      return fullResponse
+        ? JSON.stringify({ status: 200, headers: { "content-type": "application/json" }, body: payload })
+        : payload;
+    }
+    if (String(url).includes("api.fxtwitter.com/2/profile/")) {
+      return fullResponse
+        ? JSON.stringify({ status: 404, headers: {}, body: "{}" })
+        : "{}";
+    }
+    if (graphqlAction(url) === "TweetDetail") {
+      return JSON.stringify({ data: { threaded_conversation_with_injections_v2: { instructions: [] } } });
+    }
+    return fxTwitterVideoRequest(url, method, parameters, headers, fullResponse);
+  };
+  vm.runInContext("load()", fxTwitterVideo);
+  await settle();
+  assert.ifError(fxTwitterVideo.error);
+  assert.strictEqual(fxTwitterVideo.results[0].attachments[0].kind, "media");
+  assert.strictEqual(
+    fxTwitterVideo.results[0].attachments[0].url,
+    "https://video.twimg.com/amplify_video/48/vid/avc1/720x1280/high.mp4"
+  );
+  assert.strictEqual(fxTwitterVideo.results[0].actions._mediaLookup, "fxtwitter");
+  assert.doesNotMatch(fxTwitterVideo.results[0].body, /t\.co\/s7SoN2UbKY/);
+  assert.match(fxTwitterVideo.results[0].attachments[0].thumbnail, /^data:image\/jpeg;base64,/);
+  assert.match(fxTwitterVideo.results[0].body, /<img src="data:image\/jpeg;base64,/);
+  assert.ok(!fxTwitterVideo.results[0].attachments.some(attachment => attachment.kind === "link"));
+
+  const bmwVideo = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000049",
+        username: "Rainmaker1973",
+        name: "Massimo",
+        fullText: "Thieves broke the lock but couldn't take the BMW R1250GS. https://t.co/X0dqX8luUJ",
+        legacy: {
+          entities: {
+            urls: [
+              urlEntity("https://t.co/X0dqX8luUJ", "https://x.com/Rainmaker1973/status/1950000000000000049/video/1", "t.co/X0dqX8luUJ")
+            ]
+          },
+          extended_entities: { media: [] }
+        }
+      })
+    ])
+  });
+  const bmwVideoRequest = bmwVideo.sendRequest;
+  bmwVideo.sendRequest = async (url, method, parameters, headers, fullResponse) => {
+    if (String(url).includes("api.fxtwitter.com/Rainmaker1973/status/1950000000000000049")) {
+      const payload = JSON.stringify({
+        code: 200,
+        tweet: {
+          media: {
+            videos: [
+              {
+                type: "video",
+                url: "https://video.twimg.com/amplify_video/49/vid/avc1/674x1198/high.mp4",
+                thumbnail_url: "https://pbs.twimg.com/amplify_video_thumb/49/img/thumb.jpg",
+                width: 674,
+                height: 1198,
+                format: "video/mp4"
+              }
+            ]
+          }
+        }
+      });
+      return fullResponse
+        ? JSON.stringify({ status: 200, headers: { "content-type": "application/json" }, body: payload })
+        : payload;
+    }
+    if (graphqlAction(url) === "TweetDetail") {
+      return JSON.stringify({ data: { threaded_conversation_with_injections_v2: { instructions: [] } } });
+    }
+    return bmwVideoRequest(url, method, parameters, headers, fullResponse);
+  };
+  vm.runInContext("load()", bmwVideo);
+  await settle();
+  assert.ifError(bmwVideo.error);
+  assert.match(bodyWithoutConnectorStamp(bmwVideo.results[0].body), /^<p>Thieves broke the lock but couldn(?:'|&#39;)t take the BMW R1250GS\.<\/p><p><img src="data:image\/jpeg;base64,/);
+  assert.doesNotMatch(bmwVideo.results[0].body, /t\.co\/X0dqX8luUJ/);
+
+  const reutersVideo = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000050",
+        username: "Reuters",
+        name: "Reuters",
+        fullText: "Liudmyla Polianychko walks through her shattered home outside Kyiv https://reut.rs/4zOs8v9 https://t.co/fxZNHuUTYx",
+        legacy: {
+          entities: {
+            urls: [
+              urlEntity("https://t.co/article", "https://reut.rs/4zOs8v9", "reut.rs/4zOs8v9"),
+              urlEntity("https://t.co/fxZNHuUTYx", "https://x.com/Reuters/status/1950000000000000050/video/1", "t.co/fxZNHuUTYx")
+            ]
+          },
+          extended_entities: { media: [] }
+        }
+      })
+    ])
+  });
+  const reutersVideoRequest = reutersVideo.sendRequest;
+  reutersVideo.sendRequest = async (url, method, parameters, headers, fullResponse) => {
+    if (String(url).includes("api.fxtwitter.com/Reuters/status/1950000000000000050")) {
+      const payload = JSON.stringify({
+        code: 200,
+        tweet: {
+          card: {
+            url: "https://reut.rs/4zOs8v9",
+            title: "Drone strike on ammunition depot ravages Kyiv suburb",
+            description: "A Russian drone strike sparked blasts that killed 38 people.",
+            domain: "www.reuters.com",
+            image: {
+              width: 800,
+              height: 419,
+              url: "https://pbs.twimg.com/card_img/50/reuters_video_card?format=jpg&name=800x419"
+            }
+          },
+          media: {
+            videos: [
+              {
+                type: "video",
+                url: "https://video.twimg.com/amplify_video/50/vid/avc1/1920x1080/high.mp4",
+                thumbnail_url: "https://pbs.twimg.com/amplify_video_thumb/50/img/thumb.jpg",
+                width: 1920,
+                height: 1080,
+                format: "video/mp4"
+              }
+            ]
+          }
+        }
+      });
+      return fullResponse
+        ? JSON.stringify({ status: 200, headers: { "content-type": "application/json" }, body: payload })
+        : payload;
+    }
+    if (graphqlAction(url) === "TweetDetail") {
+      return JSON.stringify({ data: { threaded_conversation_with_injections_v2: { instructions: [] } } });
+    }
+    return reutersVideoRequest(url, method, parameters, headers, fullResponse);
+  };
+  vm.runInContext("load()", reutersVideo);
+  await settle();
+  assert.ifError(reutersVideo.error);
+  assert.strictEqual(reutersVideo.results[0].actions._mediaLookup, "fxtwitter");
+  assert.strictEqual(reutersVideo.results[0].attachments[0].mimeType, "video/mp4");
+  assert.match(reutersVideo.results[0].attachments[0].thumbnail, /^data:image\/jpeg;base64,/);
+  assert.strictEqual(reutersVideo.results[0].attachments[1].kind, "link");
+  assert.strictEqual(
+    reutersVideo.results[0].attachments[1].title,
+    "Drone strike on ammunition depot ravages Kyiv suburb"
+  );
+  assert.match(bodyWithoutConnectorStamp(reutersVideo.results[0].body), /^<p>Liudmyla Polianychko walks through her shattered home outside Kyiv<\/p><p><img src="(?:data:image\/jpeg;base64,|https:\/\/pbs\.twimg\.com\/)/);
+  assert.doesNotMatch(reutersVideo.results[0].body, /t\.co\/fxZNHuUTYx/);
+  assert.doesNotMatch(reutersVideo.results[0].body, /reut\.rs\/4zOs8v9/);
+  assert.strictEqual(reutersVideo.results[0].actions._linkCardLookup, "fxtwitter");
+  assert.deepStrictEqual(JSON.parse(reutersVideo.results[0].actions.openLink), {
+    url: "https://reut.rs/4zOs8v9"
+  });
+
+  const roboticHandVideo = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000051",
+        username: "Rainmaker1973",
+        name: "Massimo",
+        fullText: "A robotic hand beyond human speed, performing with top tier precision. https://t.co/gdjW8AGDNz",
+        legacy: {
+          entities: {
+            urls: [
+              urlEntity("https://t.co/gdjW8AGDNz", "https://x.com/Rainmaker1973/status/1950000000000000051/video/1", "t.co/gdjW8AGDNz")
+            ]
+          },
+          extended_entities: { media: [] }
+        }
+      })
+    ])
+  });
+  const roboticHandVideoRequest = roboticHandVideo.sendRequest;
+  roboticHandVideo.sendRequest = async (url, method, parameters, headers, fullResponse) => {
+    if (String(url).includes("api.fxtwitter.com/Rainmaker1973/status/1950000000000000051")) {
+      const payload = JSON.stringify({
+        code: 200,
+        tweet: {
+          media: {
+            all: [],
+            videos: [
+              {
+                type: "video",
+                url: "https://video.twimg.com/amplify_video/51/vid/avc1/1080x1036/high.mp4",
+                thumbnail_url: "https://pbs.twimg.com/amplify_video_thumb/51/img/thumb.jpg",
+                width: 1080,
+                height: 1036,
+                format: "video/mp4"
+              }
+            ]
+          }
+        }
+      });
+      return fullResponse
+        ? JSON.stringify({ status: 200, headers: { "content-type": "application/json" }, body: payload })
+        : payload;
+    }
+    if (graphqlAction(url) === "TweetDetail") {
+      return JSON.stringify({ data: { threaded_conversation_with_injections_v2: { instructions: [] } } });
+    }
+    return roboticHandVideoRequest(url, method, parameters, headers, fullResponse);
+  };
+  vm.runInContext("load()", roboticHandVideo);
+  await settle();
+  assert.ifError(roboticHandVideo.error);
+  assert.strictEqual(roboticHandVideo.results[0].actions._mediaLookup, "fxtwitter");
+  assert.match(roboticHandVideo.results[0].body, /<img src="(?:data:image\/jpeg;base64,|https:\/\/pbs\.twimg\.com\/)/);
+  assert.doesNotMatch(roboticHandVideo.results[0].body, /t\.co\/gdjW8AGDNz/);
+
+  const wallpaperLink = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000052",
+        username: "wallpapermag",
+        name: "Wallpaper*",
+        fullText: "Newly joint managing partners tell us about change https://www.wallpaper.com/architecture/oma-evolution-netherlands",
+        legacy: {
+          entities: { urls: [] },
+          extended_entities: { media: [] }
+        }
+      })
+    ]),
+    linkPreviews: {
+      "https://www.wallpaper.com/architecture/oma-evolution-netherlands": `<html><head>
+        <meta property="og:title" content="OMA evolution in the Netherlands" />
+        <meta property="og:description" content="Marianne Anthonissen and David Gianotten on the studio's future." />
+        <meta property="og:site_name" content="Wallpaper*" />
+        <meta property="og:image" content="https://cdn.wallpaper.com/example.jpg" />
+      </head></html>`
+    }
+  });
+  vm.runInContext("load()", wallpaperLink);
+  await settle();
+  assert.ifError(wallpaperLink.error);
+  assert.strictEqual(wallpaperLink.results[0].attachments[0].kind, "link");
+  assert.strictEqual(wallpaperLink.results[0].attachments[0].title, "OMA evolution in the Netherlands");
+  assert.strictEqual(
+    wallpaperLink.results[0].attachments[0].url,
+    "https://www.wallpaper.com/architecture/oma-evolution-netherlands"
+  );
+  assert.doesNotMatch(wallpaperLink.results[0].body, /https:\/\/www\.wallpaper\.com\/architecture\/oma-evolution-netherlands/);
+
+  const encodedAmpersand = makeContext({
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000036",
+        fullText: "Saudi Arabia &amp; Pakistan meet"
+      })
+    ])
+  });
+  vm.runInContext("load()", encodedAmpersand);
+  await settle();
+  assert.ifError(encodedAmpersand.error);
+  assert.strictEqual(
+    bodyWithoutConnectorStamp(encodedAmpersand.results[0].body),
+    "<p>Saudi Arabia &amp; Pakistan meet</p>"
+  );
 
   console.log("All X connector tests passed.");
 }

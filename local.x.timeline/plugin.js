@@ -8,14 +8,27 @@ const defaultHomeLatestTimelineQueryId = "BKB7oi212Fi7kQtCBGE4zA";
 const defaultSearchTimelineQueryId = "Bcw3RzK-PatNAmbnw54hFw";
 const defaultUserByScreenNameQueryId = "2qvSHpkWTMS9i0zJAwDNiA";
 const defaultUserTweetsQueryId = "hr4gzZONlq23okjU8fIe_A";
+const defaultUserByRestIdQueryId = "DaeC_2LfMgwCujE03HSZtw";
+const fallbackUserByRestIdQueryIds = ["xvmVfRLmnr1alc5f2dib0Q"];
+const fxTwitterProfileBase = "https://api.fxtwitter.com/2/profile";
+const fxTwitterStatusBase = "https://api.fxtwitter.com";
 const defaultTweetDetailQueryId = "97JF30KziU00483E_8elBA";
+const defaultFavoriteTweetQueryId = "lI07N6Otwv1PhnEgXILM7A";
+const defaultUnfavoriteTweetQueryId = "ZYKSe-w7KEslx3JhSIk5LA";
+const defaultCreateRetweetQueryId = "ojPdsZsimiJrUGLR1sjUtA";
+const defaultDeleteRetweetQueryId = "iQtK4dl5hBmXewYZuEOKVw";
 const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
-const syncStateKey = "syncStateV13";
+const syncStateKey = "syncStateV20";
+const connectorBuildId = "2026-08-31T10:10Z-video-poster-link-fix";
+const connectorRelease = "1.3.34";
+const connectorPluginVersion = 39;
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
+const avatarCacheKey = "avatarCacheV1";
+const cardCacheKey = "cardCacheV1";
 const transactionCacheTtlMilliseconds = 15 * 60 * 1000;
 const queryIdCacheTtlMilliseconds = 24 * 60 * 60 * 1000;
 const linkPreviewCacheTtlMilliseconds = 7 * 24 * 60 * 60 * 1000;
@@ -69,13 +82,92 @@ const userByScreenNameFeatures = {
   highlights_tweets_tab_ui_enabled: true,
   responsive_web_twitter_article_notes_tab_enabled: true,
   creator_subscriptions_tweet_preview_api_enabled: true,
+  subscriptions_feature_can_gift_premium: false,
   responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
   responsive_web_graphql_timeline_navigation_enabled: true
+};
+
+const userByScreenNameFieldToggles = {
+  withAuxiliaryUserLabels: true
 };
 
 const userTimelineFieldToggles = {
   withArticlePlainText: false
 };
+
+function logConnectorBuild(phase) {
+  console.log(
+    `[local.x.timeline] ${phase}`
+    + ` build=${connectorBuildId}`
+    + ` release=${connectorRelease}`
+    + ` plugin=${connectorPluginVersion}`
+    + ` avatars=embedded-data-url`
+    + ` entryStamp=actions._connectorBuild+body-comment`
+  );
+}
+
+function connectorEntryStamp() {
+  return `${connectorBuildId}@plugin${connectorPluginVersion}@${connectorRelease}`;
+}
+
+function describeAvatarState(value) {
+  if (value == null || value === "") return "missing";
+  const raw = String(value);
+  if (raw.startsWith("data:image/")) return `data:${raw.length}`;
+  try {
+    const host = new URL(raw).host;
+    return host ? `url:${host.replace(/^www\./, "")}` : "invalid";
+  }
+  catch (error) {
+    const permissive = permissiveTwimgAvatar(raw);
+    if (permissive) {
+      const host = urlHost(permissive);
+      return host ? `url:${host}` : "url:twimg";
+    }
+    return "invalid";
+  }
+}
+
+function usableAvatarUrl(value) {
+  if (value == null || value === "") return null;
+  const raw = String(value);
+  if (raw.startsWith("data:image/")) return raw;
+  if (describeAvatarState(raw) === "invalid") return null;
+  return normalizedAvatar(raw) || permissiveTwimgAvatar(raw);
+}
+
+function attachAvatarDiagnostics(actions, tweet, identity) {
+  actions._authorAvatarInput = describeAvatarState(tweet && tweet.authorAvatar);
+  actions._authorAvatarAssigned = describeAvatarState(identity && identity.avatar);
+  if (tweet && tweet._authorAvatarLookup) actions._authorAvatarLookup = tweet._authorAvatarLookup;
+  if (tweet && tweet.authorAvatarRaw) actions._timelineAvatarRaw = tweet.authorAvatarRaw;
+  return actions;
+}
+
+function attachItemDiagnostics(actions, tweet, identity) {
+  attachAvatarDiagnostics(actions, tweet, identity);
+  if (tweet && tweet._linkCardLookup) actions._linkCardLookup = tweet._linkCardLookup;
+  actions._linkCardInput = describeLinkCardState(tweet);
+  if (tweet && tweet._mediaLookup) actions._mediaLookup = tweet._mediaLookup;
+  return actions;
+}
+
+function describeLinkCardState(tweet) {
+  const card = linkCardForTweet(tweet);
+  if (!card) return "none";
+  const parts = [];
+  if (card.title) parts.push("title");
+  if (card.subtitle) parts.push("subtitle");
+  if (card.image) {
+    parts.push(String(card.image).startsWith("data:image/") ? "image-data" : "image-url");
+  }
+  if (card.siteName) parts.push("site");
+  return parts.length > 0 ? parts.join("+") : "url-only";
+}
+
+function connectorDebugBodySuffix() {
+  return `<!-- local.x.timeline ${connectorEntryStamp()} -->`;
+}
 
 function verify() {
   verifyAsync().then(processVerification).catch(processError);
@@ -92,19 +184,173 @@ function performAction(actionId, actionValue, item) {
 }
 
 async function performActionAsync(actionId, actionValue, item) {
-  if (actionId !== "thread") {
-    throw new Error(`Unsupported X action: ${actionId}`);
+  if (actionId === "thread") {
+    const value = parseActionValue(actionValue);
+    const tweetId = value.tweetId || tweetIdFromUrl(value.url) || tweetIdFromUrl(item && item.uri);
+    if (!tweetId) throw new Error("Could not determine the X post ID for this thread.");
+
+    const credentials = normalizedCredentials();
+    return tweetDetailItems(tweetId, credentials);
   }
 
+  if (actionId === "openLink") {
+    return item;
+  }
+
+  if (actionId === "like" || actionId === "unlike" || actionId === "repost" || actionId === "unrepost") {
+    return performEngagementAction(actionId, actionValue, item);
+  }
+
+  throw new Error(`Unsupported X action: ${actionId}`);
+}
+
+async function performEngagementAction(actionId, actionValue, item) {
   const value = parseActionValue(actionValue);
   const tweetId = value.tweetId || tweetIdFromUrl(value.url) || tweetIdFromUrl(item && item.uri);
-  if (!tweetId) throw new Error("Could not determine the X post ID for this thread.");
+  if (!tweetId) throw new Error("Could not determine the X post ID for this action.");
 
   const credentials = normalizedCredentials();
-  return tweetDetailItems(tweetId, credentials);
+  const mutation = engagementMutationForAction(actionId);
+  await graphqlPost(
+    mutation.action,
+    engagementQueryId(mutation.action),
+    mutation.variables(tweetId),
+    null,
+    null,
+    credentials
+  );
+
+  return updateItemEngagementState(item, actionId, tweetId);
+}
+
+function engagementMutationForAction(actionId) {
+  if (actionId === "like") {
+    return {
+      action: "FavoriteTweet",
+      variables: tweetId => ({ tweet_id: String(tweetId) })
+    };
+  }
+  if (actionId === "unlike") {
+    return {
+      action: "UnfavoriteTweet",
+      variables: tweetId => ({ tweet_id: String(tweetId) })
+    };
+  }
+  if (actionId === "repost") {
+    return {
+      action: "CreateRetweet",
+      variables: tweetId => ({ tweet_id: String(tweetId), dark_request: false })
+    };
+  }
+  return {
+    action: "DeleteRetweet",
+    variables: tweetId => ({ source_tweet_id: String(tweetId), dark_request: false })
+  };
+}
+
+function engagementQueryId(action) {
+  const cached = readQueryIdCache(action);
+  if (cached) return cached;
+  if (action === "FavoriteTweet") return defaultFavoriteTweetQueryId;
+  if (action === "UnfavoriteTweet") return defaultUnfavoriteTweetQueryId;
+  if (action === "CreateRetweet") return defaultCreateRetweetQueryId;
+  if (action === "DeleteRetweet") return defaultDeleteRetweetQueryId;
+  return "";
+}
+
+function updateItemEngagementState(item, actionId, tweetId) {
+  const actions = { ...(item.actions || {}) };
+  const payload = JSON.stringify({
+    tweetId: String(tweetId),
+    url: item && item.uri ? item.uri : ""
+  });
+
+  if (actionId === "like") {
+    delete actions.like;
+    actions.unlike = payload;
+  }
+  else if (actionId === "unlike") {
+    delete actions.unlike;
+    actions.like = payload;
+  }
+  else if (actionId === "repost") {
+    delete actions.repost;
+    actions.unrepost = payload;
+  }
+  else if (actionId === "unrepost") {
+    delete actions.unrepost;
+    actions.repost = payload;
+  }
+
+  item.actions = actions;
+  item.annotations = adjustEngagementAnnotations(item.annotations, actionId);
+  return item;
+}
+
+function adjustEngagementAnnotations(annotations, actionId) {
+  if (!Array.isArray(annotations) || annotations.length === 0) return annotations;
+
+  const metrics = parseMetricsAnnotation(annotations[annotations.length - 1]);
+  if (!metrics) return annotations;
+
+  if (actionId === "like") metrics.likes += 1;
+  else if (actionId === "unlike") metrics.likes = Math.max(0, metrics.likes - 1);
+  else if (actionId === "repost") metrics.reposts += 1;
+  else if (actionId === "unrepost") metrics.reposts = Math.max(0, metrics.reposts - 1);
+
+  const next = annotations.slice();
+  next[next.length - 1] = metricsAnnotationFromCounts(metrics);
+  return next;
+}
+
+function parseMetricsAnnotation(annotation) {
+  if (!annotation || typeof annotation.text !== "string") return null;
+  const text = annotation.text;
+  const metrics = { replies: 0, reposts: 0, likes: 0, views: 0, hasViews: false };
+
+  const replies = text.match(/([\d,.]+[KMB]?)\s+repl(?:y|ies)/i);
+  if (replies) metrics.replies = parseCountToken(replies[1]);
+
+  const reposts = text.match(/([\d,.]+[KMB]?)\s+reposts?/i);
+  if (reposts) metrics.reposts = parseCountToken(reposts[1]);
+
+  const likes = text.match(/([\d,.]+[KMB]?)\s+likes?/i);
+  if (likes) metrics.likes = parseCountToken(likes[1]);
+
+  const views = text.match(/([\d,.]+[KMB]?)\s+views?/i);
+  if (views) {
+    metrics.views = parseCountToken(views[1]);
+    metrics.hasViews = true;
+  }
+
+  if (!replies && !reposts && !likes && !views) return null;
+  return metrics;
+}
+
+function metricsAnnotationFromCounts(metrics) {
+  const details = [];
+  if (metrics.replies > 0) details.push(`${formatCount(metrics.replies)} ${metrics.replies === 1 ? "reply" : "replies"}`);
+  if (metrics.reposts > 0) details.push(`${formatCount(metrics.reposts)} reposts`);
+  if (metrics.likes > 0) details.push(`${formatCount(metrics.likes)} likes`);
+  if (metrics.hasViews && metrics.views > 0) details.push(`${formatCount(metrics.views)} views`);
+  return Annotation.createWithText(details.join(" - "));
+}
+
+function parseCountToken(value) {
+  const normalized = String(value || "").replace(/,/g, "").trim();
+  const match = normalized.match(/^([\d.]+)([KMB])?$/i);
+  if (!match) return 0;
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) return 0;
+  const suffix = (match[2] || "").toUpperCase();
+  if (suffix === "K") return Math.round(amount * 1000);
+  if (suffix === "M") return Math.round(amount * 1000000);
+  if (suffix === "B") return Math.round(amount * 1000000000);
+  return Math.round(amount);
 }
 
 async function verifyAsync() {
+  logConnectorBuild("verify");
   const credentials = normalizedCredentials();
   const result = {
     displayName: `X - ${sourceLabel()}`,
@@ -147,6 +393,7 @@ async function verifyAsync() {
 }
 
 async function loadAsync() {
+  logConnectorBuild("load");
   const credentials = normalizedCredentials();
   const mode = normalizedSourceMode();
   if (mode === "following") {
@@ -196,7 +443,7 @@ async function loadFollowingTimeline(credentials) {
   }
 
   writeSyncState(syncState);
-  return tweetsToItems(tweets);
+  return tweetsToItems(tweets, credentials);
 }
 
 async function loadSearchTimeline(credentials) {
@@ -238,7 +485,7 @@ async function loadSearchTimeline(credentials) {
   }
 
   writeSyncState(syncState);
-  return tweetsToItems(tweets);
+  return tweetsToItems(tweets, credentials);
 }
 
 async function loadHandleTimelines(credentials) {
@@ -285,42 +532,880 @@ async function loadHandleTimelines(credentials) {
   }
 
   writeSyncState(syncState);
-  return tweetsToItems(tweets);
+  return tweetsToItems(tweets, credentials);
 }
 
-async function tweetsToItems(tweets) {
+let loadAvatarCache = null;
+let loadAvatarDataUrlCache = null;
+let profileLookupCache = null;
+
+function resetAvatarCache() {
+  loadAvatarCache = new Map();
+  loadAvatarDataUrlCache = new Map();
+  profileLookupCache = new Map();
+}
+
+function shortRequestError(error) {
+  if (!error) return "unknown";
+  const status = error.status || error.statusCode;
+  if (status) return String(status);
+  const message = String(error.message || error).trim();
+  return message ? message.slice(0, 48).replace(/\s+/g, "-") : "unknown";
+}
+
+async function resolveAvatarForUsername(username, credentials, restId) {
+  const handle = sanitizeHandle(username);
+  if (!handle) return { avatar: null, lookup: "no-username" };
+  if (!credentials) return { avatar: null, lookup: "profile-skipped-no-creds" };
+  if (!loadAvatarCache) resetAvatarCache();
+  if (loadAvatarCache.has(handle)) {
+    return {
+      avatar: loadAvatarCache.get(handle),
+      lookup: profileLookupCache.get(handle) || "profile-cache"
+    };
+  }
+
+  const persisted = persistedAvatarForHandle(handle);
+  if (persisted) {
+    loadAvatarCache.set(handle, persisted.avatar);
+    profileLookupCache.set(handle, persisted.lookup || "profile-persisted");
+    return { avatar: persisted.avatar, lookup: persisted.lookup || "profile-persisted" };
+  }
+
+  let lookup = "profile-miss";
+  let avatar = null;
+  let graphqlProfile = null;
+
+  try {
+    graphqlProfile = await userProfileByHandle(handle, credentials);
+    if (graphqlProfile && graphqlProfile.avatar) {
+      avatar = graphqlProfile.avatar;
+      lookup = "profile+graphql";
+    }
+    else {
+      lookup = "profile-miss:graphql-empty";
+    }
+  }
+  catch (error) {
+    lookup = `profile-miss:graphql-${shortRequestError(error)}`;
+  }
+
+  const targetRestId = restId || (graphqlProfile && graphqlProfile.id);
+  if (!avatar && targetRestId) {
+    try {
+      const restProfile = await userProfileByRestId(targetRestId, credentials);
+      if (restProfile && restProfile.avatar) {
+        avatar = restProfile.avatar;
+        lookup = graphqlProfile ? "profile+restid" : "profile+restid-only";
+      }
+      else if (lookup === "profile-miss:graphql-empty") {
+        lookup = "profile-miss:restid-empty";
+      }
+    }
+    catch (error) {
+      lookup = lookup.startsWith("profile-miss:graphql")
+        ? `${lookup}+restid-${shortRequestError(error)}`
+        : `profile-miss:restid-${shortRequestError(error)}`;
+    }
+  }
+
+  if (!avatar) {
+    const xAvatar = await avatarFromXProfilePage(handle, credentials);
+    if (xAvatar) {
+      avatar = xAvatar;
+      lookup = "profile+xcom";
+    }
+    else if (lookup.startsWith("profile-miss")) {
+      lookup = `${lookup}+xcom-miss`;
+    }
+  }
+
+  if (!avatar) {
+    const fxAvatar = await avatarFromFxTwitter(handle);
+    if (fxAvatar) {
+      avatar = fxAvatar;
+      lookup = "profile+fxtwitter";
+    }
+    else if (lookup.startsWith("profile-miss")) {
+      lookup = `${lookup}+fxtwitter-miss`;
+    }
+  }
+
+  if (avatar) {
+    loadAvatarCache.set(handle, avatar);
+    profileLookupCache.set(handle, lookup);
+    writePersistedAvatarEntry(handle, avatar, lookup);
+  }
+  return { avatar, lookup };
+}
+
+async function avatarFromXProfilePage(handle, credentials) {
+  const username = sanitizeHandle(handle);
+  if (!username) return null;
+
+  try {
+    const headers = {
+      "User-Agent": browserUserAgent,
+      "Accept": "text/html,application/xhtml+xml"
+    };
+    if (credentials && credentials.cookie) headers.Cookie = credentials.cookie;
+
+    const text = await sendRequest(
+      `https://x.com/${encodeURIComponent(username)}`,
+      "GET",
+      null,
+      headers,
+      true
+    );
+    const html = responseText(text);
+    if (!html) return null;
+
+    const patterns = [
+      /"profile_image_url_https"\s*:\s*"([^"\\]+)/,
+      /"profile_image_url"\s*:\s*"([^"\\]+)/,
+      /https:\\\\\/\\\\\/pbs\.twimg\.com\\\\\/profile_images\\\\\/[^"\\]+/,
+      /https:\/\/pbs\.twimg\.com\/profile_images\/[^\s"'\\]+/i,
+      /pbs\.twimg\.com\/profile_images\/[^\s"'\\]+/i
+    ];
+    for (const pattern of patterns) {
+      const match = html.match(pattern);
+      if (!match) continue;
+      const candidate = match[1] || match[0];
+      const avatar = normalizedAvatar(candidate.replace(/\\\/\//g, "/").replace(/\\\//g, "/"));
+      if (avatar) return avatar;
+    }
+    return null;
+  }
+  catch (error) {
+    return null;
+  }
+}
+
+function responseText(text) {
+  const wrapped = statusWrappedResponse(text);
+  if (!wrapped) return String(text || "");
+  if (wrapped.status >= 400) return "";
+  if (typeof wrapped.body === "string") return wrapped.body;
+  if (wrapped.body == null) return "";
+  return JSON.stringify(wrapped.body);
+}
+
+function readPersistedAvatarCache() {
+  try {
+    const raw = getItem(avatarCacheKey);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  }
+  catch (error) {
+    return {};
+  }
+}
+
+function writePersistedAvatarEntry(handle, avatar, lookup) {
+  const key = sanitizeHandle(handle);
+  if (!key || !avatar) return;
+
+  const cache = readPersistedAvatarCache();
+  cache[key.toLowerCase()] = {
+    avatar,
+    lookup: lookup || "profile-cache",
+    at: Date.now()
+  };
+
+  const keys = Object.keys(cache);
+  if (keys.length > 500) {
+    keys.sort((left, right) => (cache[left].at || 0) - (cache[right].at || 0));
+    for (let index = 0; index < keys.length - 500; index += 1) {
+      delete cache[keys[index]];
+    }
+  }
+
+  setItem(avatarCacheKey, JSON.stringify(cache));
+}
+
+function persistedAvatarForHandle(handle) {
+  const key = sanitizeHandle(handle);
+  if (!key) return null;
+  const entry = readPersistedAvatarCache()[key.toLowerCase()];
+  if (!entry || !entry.avatar) return null;
+  return entry;
+}
+
+async function avatarFromFxTwitter(handle) {
+  const username = sanitizeHandle(handle);
+  if (!username) return null;
+
+  try {
+    const text = await sendRequest(
+      `${fxTwitterProfileBase}/${encodeURIComponent(username)}`,
+      "GET",
+      null,
+      {
+        "User-Agent": browserUserAgent,
+        "Accept": "application/json"
+      },
+      true
+    );
+    const json = parseJsonResponse(text);
+    if (json && json.code && Number(json.code) >= 400) return null;
+    const user = json && json.user ? json.user : json;
+    return normalizedAvatar(
+      user && (user.avatar_url || user.profile_image_url_https || user.profile_image_url)
+    );
+  }
+  catch (error) {
+    return null;
+  }
+}
+
+function parseJsonResponse(text) {
+  const wrapped = statusWrappedResponse(text);
+  const raw = wrapped
+    ? (typeof wrapped.body === "string" ? wrapped.body : JSON.stringify(wrapped.body))
+    : text;
+  return JSON.parse(raw);
+}
+
+async function cachedAvatarForUsername(username, credentials, restId) {
+  return (await resolveAvatarForUsername(username, credentials, restId)).avatar;
+}
+
+function shouldEmbedAvatarUrl(url) {
+  const host = urlHost(url);
+  return Boolean(host && /\.twimg\.com$/i.test(host));
+}
+
+async function avatarDataUrlForUrl(url) {
+  const normalized = normalizedAvatar(url);
+  if (!normalized || !shouldEmbedAvatarUrl(normalized)) return normalized;
+  if (!loadAvatarDataUrlCache) resetAvatarCache();
+  if (loadAvatarDataUrlCache.has(normalized)) return loadAvatarDataUrlCache.get(normalized);
+
+  try {
+    const text = await sendRequest(normalized, "GET", null, {
+      "User-Agent": browserUserAgent,
+      "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
+    }, true);
+    const wrapped = statusWrappedResponse(text);
+    if (!wrapped || wrapped.status < 200 || wrapped.status >= 400 || !wrapped.body) {
+      loadAvatarDataUrlCache.set(normalized, normalized);
+      return normalized;
+    }
+
+    const contentType = headerValue(wrapped.headers, "content-type") || "image/jpeg";
+    const mime = String(contentType).split(";")[0].trim() || "image/jpeg";
+    const bytes = responseBodyBytes(wrapped);
+    if (bytes.length === 0) {
+      loadAvatarDataUrlCache.set(normalized, normalized);
+      return normalized;
+    }
+
+    const dataUrl = `data:${mime};base64,${bytesToBase64(bytes)}`;
+    loadAvatarDataUrlCache.set(normalized, dataUrl);
+    return dataUrl;
+  }
+  catch (error) {
+    loadAvatarDataUrlCache.set(normalized, normalized);
+    return normalized;
+  }
+}
+
+async function embedTweetAvatars(tweet) {
+  if (!tweet) return;
+
+  if (tweet.authorAvatar) {
+    tweet.authorAvatar = await avatarDataUrlForUrl(tweet.authorAvatar);
+  }
+  if (tweet.repostedByAvatar) {
+    tweet.repostedByAvatar = await avatarDataUrlForUrl(tweet.repostedByAvatar);
+  }
+  if (tweet.quoted) await embedTweetAvatars(tweet.quoted);
+}
+
+async function enrichTweetAuthor(tweet, credentials) {
+  if (!tweet) return;
+
+  if (!usableAvatarUrl(tweet.authorAvatar) && tweet.authorAvatarRaw) {
+    tweet.authorAvatar = timelineAvatarFromHint(tweet.authorAvatarRaw);
+  }
+
+  if (usableAvatarUrl(tweet.authorAvatar)) {
+    tweet._authorAvatarLookup = "timeline";
+  }
+  else if (!tweet.authorUsername) {
+    tweet._authorAvatarLookup = "no-username";
+  }
+  else if (!credentials) {
+    const xAvatar = await avatarFromXProfilePage(tweet.authorUsername, null);
+    if (xAvatar) {
+      tweet.authorAvatar = xAvatar;
+      tweet._authorAvatarLookup = "xcom-no-creds";
+    }
+    else {
+      const fxAvatar = await avatarFromFxTwitter(tweet.authorUsername);
+      if (fxAvatar) {
+        tweet.authorAvatar = fxAvatar;
+        tweet._authorAvatarLookup = "fxtwitter-no-creds";
+      }
+      else {
+        tweet._authorAvatarLookup = "profile-skipped-no-creds";
+      }
+    }
+  }
+  else {
+    const resolved = await resolveAvatarForUsername(tweet.authorUsername, credentials, tweet.authorRestId);
+    tweet.authorAvatar = resolved.avatar;
+    const timelineHint = tweet.authorUserShape ? `timeline-miss:${tweet.authorUserShape}` : "timeline-miss";
+    tweet._authorAvatarLookup = tweet.authorAvatar
+      ? resolved.lookup
+      : `${timelineHint}+${resolved.lookup}`;
+  }
+
+  if (!tweet.repostedByAvatar && tweet.repostedByUsername) {
+    if (credentials) {
+      tweet.repostedByAvatar = await cachedAvatarForUsername(
+        tweet.repostedByUsername,
+        credentials,
+        tweet.repostedByRestId
+      );
+    }
+    else {
+      tweet.repostedByAvatar = await avatarFromFxTwitter(tweet.repostedByUsername);
+    }
+  }
+  if (tweet.quoted) await enrichTweetAuthor(tweet.quoted, credentials);
+
+  const beforeEmbed = tweet.authorAvatar;
+  await embedTweetAvatars(tweet);
+  if (beforeEmbed && tweet.authorAvatar && String(tweet.authorAvatar).startsWith("data:image/")) {
+    tweet._authorAvatarLookup = `${tweet._authorAvatarLookup || "unknown"}+embed`;
+    if (tweet.authorUsername) {
+      writePersistedAvatarEntry(tweet.authorUsername, tweet.authorAvatar, tweet._authorAvatarLookup);
+    }
+  }
+  else if (beforeEmbed && !tweet.authorAvatar) {
+    tweet._authorAvatarLookup = `${tweet._authorAvatarLookup || "unknown"}+embed-lost`;
+  }
+}
+
+async function tweetsToItems(tweets, credentials) {
+  resetAvatarCache();
   const normalized = sortTweetsNewestFirst(dedupeTweets(tweets));
   const items = [];
   for (const tweet of normalized) {
-    await enrichTweetLinkCard(tweet);
+    await enrichTweetAuthor(tweet, credentials);
+    await enrichTweetMedia(tweet, credentials);
+    await embedTweetMediaThumbnails(tweet);
+    await enrichTweetLinkCard(tweet, credentials);
+    finalizeTweetPresentation(tweet);
     items.push(tweetToItem(tweet));
   }
   return items;
 }
 
-async function enrichTweetLinkCard(tweet) {
+async function enrichTweetMedia(tweet, credentials) {
   if (!tweet) return;
-  if (tweet.quoted) await enrichTweetLinkCard(tweet.quoted);
-  if (!fetchLinkPreviews()) return;
+  ensureMediaPlaceholderHiddenUrls(tweet);
+  if (tweet.quoted) await enrichTweetMedia(tweet.quoted, credentials);
+  if (!showMedia()) return;
+  if (hasRenderableMedia(tweet) || !tweetNeedsMediaBackfill(tweet)) return;
 
-  const card = linkCardForTweet(tweet);
-  if (!card || !cardNeedsPreview(card)) return;
+  if (credentials && tweet.id) {
+    try {
+      const detailTweet = await tweetFromTweetDetail(tweet.id, credentials);
+      if (detailTweet && hasRenderableMedia(detailTweet)) {
+        tweet.media = detailTweet.media;
+        tweet.hiddenUrls = dedupeStrings((tweet.hiddenUrls || []).concat(detailTweet.hiddenUrls || []));
+        tweet._mediaLookup = "tweetdetail";
+        return;
+      }
+    }
+    catch (error) {
+      console.log(`Unable to backfill media from TweetDetail for ${tweet.id}: ${error.message || error}`);
+    }
+  }
 
-  const preview = await linkPreviewForUrl(card.url);
-  if (!preview) return;
+  if (tweet.authorUsername && tweet.id) {
+    const fxMedia = await mediaFromFxTwitterStatus(tweet.authorUsername, tweet.id);
+    if (fxMedia.length > 0) {
+      tweet.media = fxMedia;
+      tweet.hiddenUrls = dedupeStrings((tweet.hiddenUrls || []).concat(
+        fxMedia.flatMap(item => item.hiddenUrls || []),
+        placeholderUrlsFromTweetText(tweet.text)
+      ));
+      tweet._mediaLookup = "fxtwitter";
+    }
+  }
 
-  const current = tweet.card || {};
-  tweet.card = {
-    url: current.url || card.url,
-    type: current.type || preview.type || card.type || "website",
-    title: current.title || preview.title || card.title || "",
-    subtitle: current.subtitle || preview.subtitle || card.subtitle || "",
-    siteName: current.siteName || preview.siteName || card.siteName || urlHost(card.url) || "",
-    authorName: current.authorName || preview.authorName || card.authorName || "",
-    image: current.image || preview.image || card.image || null,
-    aspectSize: current.aspectSize || preview.aspectSize || card.aspectSize || null,
-    hiddenUrls: dedupeStrings((current.hiddenUrls || card.hiddenUrls || [card.url]).concat(preview.hiddenUrls || []))
+  if (hasRenderableMedia(tweet)) {
+    tweet.hiddenUrls = dedupeStrings((tweet.hiddenUrls || []).concat(
+      placeholderUrlsFromTweetText(tweet.text)
+    ));
+  }
+}
+
+function placeholderUrlsFromTweetText(text) {
+  const urls = [];
+  const value = String(text || "");
+  for (const match of value.match(/https?:\/\/t\.co\/\w+/gi) || []) urls.push(match);
+  for (const match of value.match(/(?<![/\w])t\.co\/\w+/gi) || []) {
+    urls.push(match, `https://${match}`);
+  }
+  return urls;
+}
+
+function tweetHasMedia(tweet) {
+  return Boolean(tweet && Array.isArray(tweet.media) && tweet.media.length > 0);
+}
+
+function tweetHasVideoMedia(tweet) {
+  return Boolean(
+    tweetHasMedia(tweet)
+    && (tweet.media || []).some(item => item.type === "video" || item.type === "animated_gif")
+  );
+}
+
+function ensureMediaPlaceholderHiddenUrls(tweet) {
+  if (!tweetHasMedia(tweet) && !tweet._mediaLookup) return;
+  tweet.hiddenUrls = dedupeStrings((tweet.hiddenUrls || []).concat(
+    placeholderUrlsFromTweetText(tweet.text)
+  ));
+}
+
+function finalizeTweetPresentation(tweet) {
+  if (!tweet) return;
+  if (tweet.quoted) finalizeTweetPresentation(tweet.quoted);
+  ensureTweetExternalUrls(tweet);
+}
+
+function ensureTweetExternalUrls(tweet) {
+  if (!tweet) return;
+  tweet.externalUrls = dedupeStrings([
+    ...(tweet.externalUrls || []),
+    ...externalUrlsFromText(tweet.text)
+  ]);
+}
+
+function externalUrlsFromText(text) {
+  const urls = [];
+  for (const match of String(text || "").match(/https?:\/\/[^\s<]+/gi) || []) {
+    const parts = splitTrailingUrlPunctuation(match);
+    if (isExternalWebUrl(parts.url)) urls.push(parts.url);
+  }
+  return urls;
+}
+
+function stripMediaPlaceholderUrls(text, tweet) {
+  if (!text) return "";
+  if (!tweetHasMedia(tweet) && !tweet._mediaLookup) return text;
+  return String(text)
+    .replace(/[ \t]*https?:\/\/t\.co\/\w+/gi, "")
+    .replace(/[ \t]*t\.co\/\w+/gi, "");
+}
+
+function primaryVideoMedia(tweet) {
+  const media = tweet && tweet.media ? tweet.media : [];
+  return media.find(item => item.type === "video" || item.type === "animated_gif")
+    || media.find(item => /video\/mp4|^video$/i.test(String(item.mimeType || "")))
+    || media.find(item => /video\.twimg\.com/i.test(String(item.url || "")));
+}
+
+function videoPosterUrl(media) {
+  if (!media) return null;
+  if (media.thumbnail) {
+    const poster = usableVideoPosterUrl(media.thumbnail);
+    if (poster) return poster;
+  }
+  return null;
+}
+
+async function embedTweetMediaThumbnails(tweet) {
+  if (!tweet || !Array.isArray(tweet.media)) return;
+  for (const media of tweet.media) {
+    if (media.thumbnail && shouldEmbedAvatarUrl(media.thumbnail)) {
+      media.thumbnail = await avatarDataUrlForUrl(normalizedPhotoUrl(media.thumbnail));
+    }
+  }
+  if (tweet.quoted) await embedTweetMediaThumbnails(tweet.quoted);
+}
+
+function tweetNeedsMediaBackfill(tweet) {
+  if ((tweet.hiddenUrls || []).length > 0) return true;
+  const text = String(tweet.text || "");
+  if (/[\u{1F3A5}\u{1F4F9}]/u.test(text)) return true;
+  if (/\bt\.co\/\w+/i.test(text) && !linkCardForTweet(tweet)) return true;
+  return false;
+}
+
+async function tweetFromTweetDetail(tweetId, credentials) {
+  const data = await graphqlGet(
+    "TweetDetail",
+    normalizedTweetDetailQueryId(),
+    {
+      focalTweetId: String(tweetId),
+      referrer: "tweet",
+      with_rux_injections: false,
+      includePromotedContent: false,
+      withCommunity: true,
+      withQuickPromoteEligibilityTweetFields: true,
+      withBirdwatchNotes: true,
+      withVoice: true,
+      rankingMode: "Relevance"
+    },
+    readFeatures,
+    userTimelineFieldToggles,
+    credentials
+  );
+  const tweets = extractTweetsFromInstructions(tweetDetailInstructions(data));
+  return tweets.find(entry => entry && String(entry.id) === String(tweetId)) || null;
+}
+
+async function mediaFromFxTwitterStatus(username, tweetId) {
+  const handle = sanitizeHandle(username);
+  if (!handle || !tweetId) return [];
+
+  try {
+    const text = await sendRequest(
+      `${fxTwitterStatusBase}/${encodeURIComponent(handle)}/status/${encodeURIComponent(tweetId)}`,
+      "GET",
+      null,
+      {
+        "User-Agent": browserUserAgent,
+        "Accept": "application/json"
+      },
+      true
+    );
+    const json = parseJsonResponse(text);
+    if (json && json.code && Number(json.code) >= 400) return [];
+
+    const mediaRoot = json && json.tweet && json.tweet.media;
+    return fxTwitterMediaItems(mediaRoot);
+  }
+  catch (error) {
+    return [];
+  }
+}
+
+function fxTwitterMediaItems(mediaRoot) {
+  if (!mediaRoot) return [];
+  const rawItems = [];
+  for (const source of [mediaRoot.all, mediaRoot.videos, mediaRoot.photos]) {
+    if (Array.isArray(source) && source.length > 0) rawItems.push(...source);
+  }
+  return dedupeBy(rawItems.map(fxTwitterMediaItem).filter(Boolean), item => item.url);
+}
+
+function fxTwitterMediaItem(item) {
+  if (!item || !item.url) return null;
+
+  const rawType = String(item.type || "photo").toLowerCase();
+  const type = rawType === "gif" ? "animated_gif" : rawType;
+  const url = String(item.url);
+  const thumbnail = item.thumbnail_url ? String(item.thumbnail_url) : null;
+
+  return {
+    url,
+    type,
+    thumbnail,
+    mimeType: item.format || mediaMimeType(type, url),
+    width: finiteNumber(item.width),
+    height: finiteNumber(item.height),
+    altText: null,
+    hiddenUrls: dedupeStrings([url, thumbnail].filter(Boolean))
   };
+}
+
+async function enrichTweetLinkCard(tweet, credentials) {
+  if (!tweet) return;
+  if (tweet.quoted) await enrichTweetLinkCard(tweet.quoted, credentials);
+  if (!showLinkCards() || !nativeLinkAvailable()) return;
+
+  ensureTweetExternalUrls(tweet);
+  ensureLinkCardShell(tweet);
+
+  let lookup = cardHasMetadata(tweet.card) ? "native" : "native-miss";
+  const cachedCard = readCardCache(tweet.id);
+  if (!cardHasMetadata(tweet.card) && cachedCard) {
+    tweet.card = mergeCards(tweet.card, cachedCard.card);
+    lookup = cachedCard.lookup || "card-cache";
+  }
+
+  if (!cardHasMetadata(tweet.card) && tweetWantsLinkCardEnrichment(tweet) && credentials && tweet.id) {
+    try {
+      const detailCard = await cardFromTweetDetail(tweet.id, credentials);
+      if (cardHasMetadata(detailCard)) {
+        tweet.card = mergeCards(tweet.card, detailCard);
+        lookup = "tweetdetail";
+        writeCardCache(tweet.id, tweet.card, lookup);
+      }
+      else if (lookup === "native-miss") {
+        lookup = "native-miss:tweetdetail-empty";
+      }
+    }
+    catch (error) {
+      lookup = lookup === "native-miss"
+        ? `native-miss:tweetdetail-${shortRequestError(error)}`
+        : lookup;
+    }
+  }
+
+  if (!cardHasMetadata(tweet.card) && tweetWantsLinkCardEnrichment(tweet) && tweet.authorUsername && tweet.id) {
+    const fxCard = await cardFromFxTwitterStatus(tweet.authorUsername, tweet.id);
+    if (cardHasMetadata(fxCard)) {
+      tweet.card = mergeCards(tweet.card, fxCard);
+      lookup = "fxtwitter";
+      writeCardCache(tweet.id, tweet.card, lookup);
+    }
+    else if (lookup.startsWith("native-miss")) {
+      lookup = `${lookup}+fxtwitter-miss`;
+    }
+  }
+
+  if (fetchLinkPreviews()) {
+    const shell = linkCardForTweet(tweet);
+    if (shell && cardNeedsPreview(shell)) {
+      const preview = await linkPreviewForUrl(shell.url);
+      if (preview) {
+        tweet.card = mergeCardPreview(tweet.card || {}, preview, shell);
+        lookup = lookup.includes("miss") ? "og" : `${lookup}+og`;
+        writeCardCache(tweet.id, tweet.card, lookup);
+      }
+      else if (lookup.includes("miss")) {
+        lookup = `${lookup}+og-miss`;
+      }
+    }
+  }
+
+  ensureMinimalLinkCard(tweet);
+
+  if (tweet.card && tweet.card.image && shouldEmbedAvatarUrl(tweet.card.image)) {
+    tweet.card.image = await avatarDataUrlForUrl(normalizedPhotoUrl(tweet.card.image));
+  }
+
+  tweet._linkCardLookup = lookup;
+}
+
+async function cardFromTweetDetail(tweetId, credentials) {
+  const tweet = await tweetFromTweetDetail(tweetId, credentials);
+  return tweet && tweet.card ? tweet.card : null;
+}
+
+async function cardFromFxTwitterStatus(username, tweetId) {
+  const handle = sanitizeHandle(username);
+  if (!handle || !tweetId) return null;
+
+  try {
+    const text = await sendRequest(
+      `${fxTwitterStatusBase}/${encodeURIComponent(handle)}/status/${encodeURIComponent(tweetId)}`,
+      "GET",
+      null,
+      {
+        "User-Agent": browserUserAgent,
+        "Accept": "application/json"
+      },
+      true
+    );
+    const json = parseJsonResponse(text);
+    if (json && json.code && Number(json.code) >= 400) return null;
+
+    const card = json && json.tweet && json.tweet.card;
+    if (!card || !card.url) return null;
+
+    const image = fxTwitterCardImage(card.image);
+    return {
+      url: card.url,
+      type: "website",
+      title: normalizedCardText(card.title || ""),
+      subtitle: normalizedCardText(card.description || card.subtitle || ""),
+      siteName: normalizedCardText(card.domain || urlHost(card.url) || ""),
+      authorName: "",
+      image: image.url,
+      aspectSize: image.aspectSize,
+      hiddenUrls: buildLinkHiddenUrls({ externalUrls: [card.url] }, card.url)
+    };
+  }
+  catch (error) {
+    return null;
+  }
+}
+
+function fxTwitterCardImage(image) {
+  const rawUrl = typeof image === "string" ? image : (image && image.url);
+  const url = rawUrl ? normalizedPhotoUrl(normalizedAvatar(rawUrl) || rawUrl) : null;
+  const width = image && finiteNumber(image.width);
+  const height = image && finiteNumber(image.height);
+  return {
+    url,
+    aspectSize: width > 0 && height > 0 ? { width, height } : null
+  };
+}
+
+function ensureLinkCardShell(tweet) {
+  const url = linkCardSourceUrl(tweet);
+  if (!isExternalWebUrl(url)) return;
+  tweet.card = mergeCards(tweet.card || {}, {
+    url,
+    type: "",
+    title: "",
+    subtitle: "",
+    siteName: "",
+    authorName: "",
+    image: null,
+    aspectSize: null,
+    hiddenUrls: buildLinkHiddenUrls(tweet, url)
+  });
+}
+
+function ensureMinimalLinkCard(tweet) {
+  if (!tweet || !tweet.card || !isExternalWebUrl(tweet.card.url)) return;
+  if (!tweet.card.siteName) tweet.card.siteName = urlHost(tweet.card.url) || "";
+  if (!tweet.card.hiddenUrls || tweet.card.hiddenUrls.length === 0) {
+    tweet.card.hiddenUrls = buildLinkHiddenUrls(tweet, tweet.card.url);
+  }
+}
+
+function buildLinkHiddenUrls(tweet, url) {
+  const urls = [url];
+  for (const external of tweet.externalUrls || []) {
+    if (equivalentWebUrl(external, url)) urls.push(external);
+  }
+  for (const hidden of tweet.hiddenUrls || []) {
+    if (equivalentWebUrl(hidden, url) || equivalentWebUrl(url, hidden)) urls.push(hidden);
+  }
+  for (const candidate of urls.slice()) {
+    if (!candidate) continue;
+    try {
+      const parsed = new URL(candidate.startsWith("http") ? candidate : `https://${candidate}`);
+      urls.push(`${parsed.host}${parsed.pathname}${parsed.search}`);
+      if (parsed.pathname.length > 1) {
+        urls.push(`${parsed.host}${parsed.pathname.replace(/\/$/, "")}${parsed.search}`);
+      }
+    }
+    catch (error) {
+      continue;
+    }
+  }
+  return dedupeStrings(urls.filter(Boolean));
+}
+
+function isLinkOnlyTweet(tweet) {
+  return Boolean(
+    tweet
+    && !hasRenderableMedia(tweet)
+    && !hasRenderablePoll(tweet)
+    && isExternalWebUrl(linkCardSourceUrl(tweet))
+  );
+}
+
+function tweetWantsLinkCardEnrichment(tweet) {
+  return isLinkOnlyTweet(tweet) || Boolean(tweetHasVideoMedia(tweet) && linkCardSourceUrl(tweet));
+}
+
+function linkCardSourceUrl(tweet) {
+  if (!tweet) return null;
+  if (tweetHasVideoMedia(tweet)) {
+    const article = articleUrlForTweet(tweet);
+    if (article) return article;
+  }
+  return (tweet.card && tweet.card.url) || firstExternalUrl(tweet.externalUrls);
+}
+
+function articleUrlForTweet(tweet) {
+  const candidates = dedupeStrings([
+    tweet && tweet.card && tweet.card.url,
+    ...(tweet && tweet.externalUrls ? tweet.externalUrls : [])
+  ]);
+  for (const value of candidates) {
+    if (!isExternalWebUrl(value)) continue;
+    if (isVideoPlaceholderUrl(value)) continue;
+    return value;
+  }
+  return null;
+}
+
+function isVideoPlaceholderUrl(value) {
+  if (!isWebUrl(value)) return false;
+  const host = urlHost(value);
+  if (host === "t.co") return true;
+  if (host === "x.com" || host === "twitter.com") {
+    return /\/video\/\d+/i.test(value) || /\/status\/\d+\/video/i.test(value);
+  }
+  return false;
+}
+
+function cardHasMetadata(card) {
+  if (!card || !isExternalWebUrl(card.url)) return false;
+  return Boolean(card.title || card.subtitle || card.image);
+}
+
+function mergeCards(current, incoming) {
+  if (!incoming) return current || null;
+  const base = current || {};
+  return {
+    url: base.url || incoming.url,
+    type: base.type || incoming.type || "website",
+    title: base.title || incoming.title || "",
+    subtitle: base.subtitle || incoming.subtitle || "",
+    siteName: base.siteName || incoming.siteName || "",
+    authorName: base.authorName || incoming.authorName || "",
+    image: base.image || incoming.image || null,
+    aspectSize: base.aspectSize || incoming.aspectSize || null,
+    hiddenUrls: dedupeStrings((base.hiddenUrls || []).concat(incoming.hiddenUrls || [incoming.url]))
+  };
+}
+
+function mergeCardPreview(current, preview, shell) {
+  return {
+    url: current.url || shell.url || preview.url,
+    type: current.type || preview.type || shell.type || "website",
+    title: current.title || preview.title || shell.title || "",
+    subtitle: current.subtitle || preview.subtitle || shell.subtitle || "",
+    siteName: current.siteName || preview.siteName || shell.siteName || urlHost(shell.url) || "",
+    authorName: current.authorName || preview.authorName || shell.authorName || "",
+    image: current.image || preview.image || shell.image || null,
+    aspectSize: current.aspectSize || preview.aspectSize || shell.aspectSize || null,
+    hiddenUrls: dedupeStrings((current.hiddenUrls || shell.hiddenUrls || [shell.url]).concat(preview.hiddenUrls || []))
+  };
+}
+
+function readCardCache(tweetId) {
+  if (!tweetId) return null;
+  try {
+    const cache = JSON.parse(safeGetItem(cardCacheKey) || "{}");
+    const entry = cache[String(tweetId)];
+    if (!entry || !entry.card) return null;
+    if (!entry.builtAt || Date.now() - Number(entry.builtAt) >= linkPreviewCacheTtlMilliseconds) return null;
+    return entry;
+  }
+  catch (error) {
+    return null;
+  }
+}
+
+function writeCardCache(tweetId, card, lookup) {
+  if (!tweetId || !card || !cardHasMetadata(card)) return;
+  try {
+    const cache = JSON.parse(safeGetItem(cardCacheKey) || "{}");
+    cache[String(tweetId)] = {
+      card,
+      lookup: lookup || "card-cache",
+      builtAt: Date.now()
+    };
+    safeSetItem(cardCacheKey, JSON.stringify(pruneCardCache(cache)));
+  }
+  catch (error) {
+    return;
+  }
+}
+
+function pruneCardCache(cache) {
+  const entries = Object.entries(cache || {});
+  if (entries.length <= 200) return cache;
+  entries.sort((left, right) => (left[1].builtAt || 0) - (right[1].builtAt || 0));
+  const next = {};
+  for (const [key, value] of entries.slice(-200)) next[key] = value;
+  return next;
 }
 
 function cardNeedsPreview(card) {
@@ -385,18 +1470,90 @@ async function homeLatestTimelinePage(count, cursor, credentials) {
 }
 
 async function userProfileByHandle(handle, credentials) {
-  const data = await graphqlGet(
-    "UserByScreenName",
-    normalizedUserByScreenNameQueryId(),
-    {
-      screen_name: handle,
-      withSafetyModeUserFields: true
-    },
-    userByScreenNameFeatures,
-    null,
-    credentials
-  );
+  const variables = {
+    screen_name: handle,
+    withSafetyModeUserFields: true
+  };
+  const queryId = normalizedUserByScreenNameQueryId();
+  let data;
+  try {
+    data = await graphqlGet(
+      "UserByScreenName",
+      queryId,
+      variables,
+      userByScreenNameFeatures,
+      userByScreenNameFieldToggles,
+      credentials
+    );
+  }
+  catch (getError) {
+    data = await graphqlPost(
+      "UserByScreenName",
+      queryId,
+      variables,
+      userByScreenNameFeatures,
+      userByScreenNameFieldToggles,
+      credentials
+    );
+  }
   return userProfileFromGraphql(data, handle);
+}
+
+async function userProfileByRestId(userId, credentials) {
+  const variables = {
+    userId: String(userId),
+    withSafetyModeUserFields: true
+  };
+  const queryIds = userByRestIdQueryIds();
+  let lastError = null;
+
+  for (const queryId of queryIds) {
+    try {
+      let data;
+      try {
+        data = await graphqlGet(
+          "UserByRestId",
+          queryId,
+          variables,
+          userByScreenNameFeatures,
+          userByScreenNameFieldToggles,
+          credentials
+        );
+      }
+      catch (getError) {
+        data = await graphqlPost(
+          "UserByRestId",
+          queryId,
+          variables,
+          userByScreenNameFeatures,
+          userByScreenNameFieldToggles,
+          credentials
+        );
+      }
+      const rawUser = data && data.data && data.data.user && data.data.user.result;
+      const profile = normalizeUserProfile(rawUser);
+      if (profile.id) {
+        writeQueryIdCache("UserByRestId", queryId);
+        return profile;
+      }
+    }
+    catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error(`Could not resolve user ${userId}.`);
+}
+
+function userByRestIdQueryIds() {
+  const ids = [
+    normalizedUserByRestIdQueryId(),
+    defaultUserByRestIdQueryId,
+    ...fallbackUserByRestIdQueryIds
+  ];
+  const discovered = readQueryIdCache("UserByRestId");
+  if (discovered) ids.unshift(discovered);
+  return dedupeStrings(ids);
 }
 
 async function userTweetsPage(userId, count, cursor, credentials) {
@@ -444,7 +1601,8 @@ async function currentAccountIdentity(credentials) {
     const avatar = profile && profile.avatar
       ? profile.avatar
       : normalizedAvatar(settings.profile_image_url_https || settings.profile_image_url);
-    return createIdentity(name, `@${handle}`, avatar, `https://x.com/${handle}`);
+    const embeddedAvatar = avatar ? await avatarDataUrlForUrl(avatar) : null;
+    return createIdentity(name, `@${handle}`, embeddedAvatar, `https://x.com/${handle}`);
   }
   catch (error) {
     console.log(`Unable to load X account identity: ${error.message || error}`);
@@ -473,7 +1631,7 @@ async function tweetDetailItems(tweetId, credentials) {
   );
 
   const tweets = dedupeTweets(extractTweetsFromInstructions(tweetDetailInstructions(data)));
-  const items = await tweetsToItems(tweets);
+  const items = await tweetsToItems(tweets, credentials);
   if (items.length > 0) return items;
   throw new Error("X did not return a conversation for this post.");
 }
@@ -481,7 +1639,7 @@ async function tweetDetailItems(tweetId, credentials) {
 function userProfileFromGraphql(data, requestedHandle) {
   const rawUser = data && data.data && data.data.user && data.data.user.result;
   const profile = normalizeUserProfile(rawUser);
-  if (!profile.id) {
+  if (!profile.id && !profile.username) {
     throw new Error(`Could not resolve @${requestedHandle}. Check the handle or refresh the UserByScreenName query ID.`);
   }
   return profile;
@@ -527,6 +1685,10 @@ async function graphqlGet(action, queryId, variables, features, fieldToggles, cr
         clearTransactionCache();
         continue;
       }
+      if (attempt < 2 && isTransientHttpError(error)) {
+        await delayMilliseconds(750 * (attempt + 1));
+        continue;
+      }
       if (attempt < 2 && isQueryIdRetryableError(error)) {
         const discovered = await discoverQueryId(action, credentials, activeQueryId);
         if (discovered && discovered !== activeQueryId) {
@@ -565,6 +1727,10 @@ async function graphqlPost(action, queryId, variables, features, fieldToggles, c
       lastError = error;
       if (attempt === 0 && isTransactionRetryableError(error)) {
         clearTransactionCache();
+        continue;
+      }
+      if (attempt < 2 && isTransientHttpError(error)) {
+        await delayMilliseconds(750 * (attempt + 1));
         continue;
       }
       if (attempt < 2 && isQueryIdRetryableError(error)) {
@@ -661,6 +1827,9 @@ function statusError(status, body, headers, action) {
         ? `${source} rate limit reached. Try again after ${new Date(Number(reset) * 1000).toISOString()}.`
         : `${source} rate limit reached. Try again later.`;
   }
+  else if (status === 503) {
+    message = "X is temporarily unavailable (HTTP 503). Try again in a moment.";
+  }
 
   const detail = firstGraphqlErrorMessage(body);
   if (detail && status !== 401 && status !== 403) message += ` ${detail}`;
@@ -709,6 +1878,15 @@ function parseGraphqlResponse(text, action) {
 
 function isTransactionRetryableError(error) {
   return error && error.xGraphqlCode === 344;
+}
+
+function isTransientHttpError(error) {
+  const status = error && error.xStatus;
+  return status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+function delayMilliseconds(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function isQueryIdRetryableError(error) {
@@ -833,7 +2011,8 @@ function normalizeTweet(rawResult, includeQuoted) {
   if (!id) return null;
 
   const userResult = result.core && (result.core.user_results || result.core.user_result);
-  const user = normalizeUser(userResult && (userResult.result || userResult));
+  const rawUser = userResult || null;
+  const user = normalizeUser(rawUser);
   const date = tweetDate(
     (legacy && legacy.created_at)
     || (details && (details.created_at || details.created_at_ms))
@@ -847,6 +2026,7 @@ function normalizeTweet(rawResult, includeQuoted) {
     retweeted.isRetweet = true;
     retweeted.repostedByName = user.name || user.username || "X";
     retweeted.repostedByUsername = user.username || null;
+    retweeted.repostedByRestId = user.id || null;
     retweeted.repostedByAvatar = user.avatar || null;
     return retweeted;
   }
@@ -881,6 +2061,8 @@ function normalizeTweet(rawResult, includeQuoted) {
   const replyUsername = (legacy && legacy.in_reply_to_screen_name)
     || (details && details.in_reply_to_screen_name);
 
+  const authorAvatarRaw = describeTimelineAvatarRaw(rawUser);
+
   return {
     id,
     text,
@@ -888,7 +2070,10 @@ function normalizeTweet(rawResult, includeQuoted) {
     url: user.username ? `https://x.com/${user.username}/status/${id}` : `https://x.com/i/web/status/${id}`,
     authorName: user.name || user.username || "X",
     authorUsername: user.username || null,
-    authorAvatar: user.avatar || null,
+    authorRestId: user.id || null,
+    authorAvatar: user.avatar || timelineAvatarFromHint(authorAvatarRaw) || null,
+    authorAvatarRaw,
+    authorUserShape: describeUserShape(rawUser),
     likes: finiteNumber(firstDefined(legacy && legacy.favorite_count, counts.favorite_count, counts.like_count)),
     reposts: finiteNumber(firstDefined(legacy && legacy.retweet_count, counts.retweet_count, counts.repost_count)),
     replies: finiteNumber(firstDefined(legacy && legacy.reply_count, counts.reply_count)),
@@ -902,6 +2087,8 @@ function normalizeTweet(rawResult, includeQuoted) {
     isReply: Boolean(replyStatusId || (legacy && legacy.in_reply_to_user_id_str)),
     replyToUsername: replyUsername || null,
     isRetweet: /^RT @/.test(fullText),
+    favorited: Boolean(legacy && legacy.favorited),
+    retweeted: Boolean(legacy && legacy.retweeted),
     repostedByName: null,
     repostedByUsername: null,
     repostedByAvatar: null,
@@ -920,6 +2107,7 @@ function unwrapTweetResult(result) {
 function normalizeUser(rawUser) {
   const profile = normalizeUserProfile(rawUser);
   return {
+    id: profile.id,
     username: profile.username,
     name: profile.name,
     avatar: profile.avatar
@@ -927,12 +2115,46 @@ function normalizeUser(rawUser) {
 }
 
 function normalizeUserProfile(rawUser) {
-  const user = rawUser && rawUser.result ? rawUser.result : rawUser;
-  const core = user && user.core ? user.core : {};
-  const legacy = user && user.legacy ? user.legacy : {};
+  const layers = flattenUserLayers(rawUser);
+  const user = layers[layers.length - 1] || rawUser;
+  const typeName = String(user && user.__typename || "").toLowerCase();
+  if (typeName.includes("unavailable") || typeName.includes("limited")) {
+    return {
+      id: null,
+      username: null,
+      name: "X",
+      avatar: null,
+      url: null,
+      protected: false
+    };
+  }
+
+  let mergedCore = {};
+  let mergedLegacy = {};
+  for (const layer of layers) {
+    if (layer && layer.core) mergedCore = { ...mergedCore, ...layer.core };
+    if (layer && layer.legacy) mergedLegacy = { ...mergedLegacy, ...layer.legacy };
+  }
+
+  const core = user && user.core ? { ...mergedCore, ...user.core } : mergedCore;
+  const legacy = user && user.legacy ? { ...mergedLegacy, ...user.legacy } : mergedLegacy;
   const username = core.screen_name || legacy.screen_name || null;
   const name = core.name || legacy.name || username;
-  const avatar = normalizedAvatar(userAvatarUrl(user, core, legacy));
+  let avatar = avatarFromUserRecord(user, core, legacy);
+  if (!avatar) {
+    for (const layer of layers) {
+      avatar = avatarFromUserRecord(
+        layer,
+        layer && layer.core ? { ...mergedCore, ...layer.core } : core,
+        layer && layer.legacy ? { ...mergedLegacy, ...layer.legacy } : legacy
+      );
+      if (avatar) break;
+      avatar = deepAvatarUrl(layer);
+      if (avatar) break;
+    }
+  }
+  if (!avatar) avatar = deepAvatarUrl(rawUser);
+
   const id = (user && user.rest_id)
     || (user && user.id_str)
     || core.id_str
@@ -948,21 +2170,211 @@ function normalizeUserProfile(rawUser) {
   };
 }
 
+function flattenUserLayers(rawUser) {
+  const layers = [];
+  let current = rawUser;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
+    layers.push(current);
+    if (current.result && typeof current.result === "object" && current.result !== current) {
+      current = current.result;
+      continue;
+    }
+    break;
+  }
+  return layers.length > 0 ? layers : (rawUser ? [rawUser] : []);
+}
+
+function avatarFromUserRecord(user, core, legacy) {
+  return normalizedAvatar(userAvatarUrl(user, core, legacy));
+}
+
+function timelineAvatarFromHint(rawHint) {
+  if (!rawHint || rawHint === "none" || rawHint.startsWith("obj:") || rawHint.startsWith("typeof:")) {
+    return null;
+  }
+  return normalizedAvatar(rawHint);
+}
+
+function cleanAvatarString(value) {
+  return String(value || "").replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200D\uFEFF]/g, "").trim();
+}
+
+function permissiveTwimgAvatar(raw) {
+  const cleaned = cleanAvatarString(raw);
+  if (!cleaned || !/profile_images\//.test(cleaned) || !/\.twimg\.com/i.test(cleaned)) return null;
+  const match = cleaned.match(/(?:https?:\/\/)?(?:[\w.-]+\.)?twimg\.com\/profile_images\/[^\s"'<>]+/i);
+  if (!match) return null;
+  let url = match[0];
+  if (url.startsWith("//")) url = `https:${url}`;
+  else if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+  return upgradeTwimgProfileAvatar(url.replace(/^http:\/\//i, "https://"));
+}
+
+function describeTimelineAvatarRaw(rawUser) {
+  const layers = flattenUserLayers(rawUser);
+  for (const layer of layers) {
+    const legacy = layer && layer.legacy ? layer.legacy : {};
+    const core = layer && layer.core ? layer.core : {};
+    const candidates = [
+      legacy.profile_image_url_https,
+      legacy.profile_image_url,
+      core.profile_image_url_https,
+      core.profile_image_url,
+      layer && layer.avatar,
+      layer && layer.profile_image_url_https,
+      layer && layer.profile_image_url
+    ];
+    for (const candidate of candidates) {
+      const described = describeRawAvatarCandidate(candidate);
+      if (described) return described;
+    }
+  }
+  const deep = deepAvatarUrl(rawUser);
+  return deep ? deep.slice(0, 120) : "none";
+}
+
+function describeRawAvatarCandidate(value) {
+  if (value == null || value === false) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? trimmed.slice(0, 120) : null;
+  }
+  if (typeof value === "object") {
+    const resolved = profileImageFieldValue(value);
+    if (resolved) return resolved.slice(0, 120);
+    return `obj:${Object.keys(value).slice(0, 4).join(",")}`;
+  }
+  return `typeof:${typeof value}`;
+}
+
+function profileImageFieldValue(value) {
+  if (value == null || value === false) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  if (typeof value !== "object") return null;
+  return firstDefined(
+    value.image_url,
+    value.image_url_https,
+    value.imageUrl,
+    value.url,
+    value.profile_image_url_https,
+    value.profile_image_url,
+    value.avatar_url
+  );
+}
+
+function describeUserShape(user) {
+  if (!user || typeof user !== "object") return "none";
+  const parts = [];
+  if (user.legacy && user.legacy.profile_image_url_https) parts.push("legacy-pi");
+  if (user.avatar && typeof user.avatar === "object" && user.avatar.image_url) parts.push("avatar-obj");
+  if (user.rest_id || user.id_str) parts.push("rest_id");
+  if (user.legacy) parts.push("legacy");
+  if (user.core) parts.push("core");
+  if (parts.length > 0) return parts.join("+");
+  return Object.keys(user).slice(0, 5).join(",");
+}
+
 function userAvatarUrl(user, core, legacy) {
-  const avatar = user && user.avatar ? user.avatar : {};
-  return avatar.image_url
-    || avatar.image_url_https
-    || avatar.imageUrl
-    || avatar.url
-    || (user && user.profile_image_url_https)
-    || (user && user.profile_image_url)
-    || (user && user.avatar_url)
-    || core.profile_image_url
-    || core.profile_image_url_https
-    || core.avatar_url
-    || legacy.profile_image_url_https
-    || legacy.profile_image_url
-    || legacy.avatar_url;
+  if (typeof user === "string" && user.trim()) return user;
+  if (typeof user?.avatar === "string" && user.avatar.trim()) return user.avatar;
+
+  const avatar = user && user.avatar && typeof user.avatar === "object" ? user.avatar : {};
+  const coreAvatar = core && core.avatar ? core.avatar : {};
+  const shapeUrl = profileImageShapeUrl(user && user.profile_image_shape);
+  return firstProfileImageUrl(
+    avatar.image_url,
+    avatar.image_url_https,
+    avatar.imageUrl,
+    avatar.url,
+    coreAvatar.image_url,
+    coreAvatar.image_url_https,
+    coreAvatar.imageUrl,
+    coreAvatar.url,
+    shapeUrl,
+    user?.profile_image_url_https,
+    user?.profile_image_url,
+    user?.avatar_url,
+    core?.profile_image_url_https,
+    core?.profile_image_url,
+    core?.avatar_url,
+    legacy?.profile_image_url_https,
+    legacy?.profile_image_url,
+    legacy?.avatar_url
+  );
+}
+
+function firstProfileImageUrl(...values) {
+  for (const value of values) {
+    const resolved = profileImageFieldValue(value);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+function profileImageShapeUrl(shape) {
+  if (!shape || typeof shape !== "object") return null;
+  for (const value of Object.values(shape)) {
+    if (typeof value === "string" && value.trim()) return value;
+    if (!value || typeof value !== "object") continue;
+    const url = value.image_url
+      || value.image_url_https
+      || value.imageUrl
+      || value.url;
+    if (url) return url;
+  }
+  return null;
+}
+
+function deepAvatarUrl(value, depth) {
+  const level = depth || 0;
+  if (!value || level > 6) return null;
+  if (typeof value === "string") {
+    return /profile_images\//.test(value) && /\.twimg\.com/.test(value)
+      ? normalizedAvatar(value)
+      : null;
+  }
+  if (typeof value !== "object") return null;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const found = deepAvatarUrl(entry, level + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  for (const key of ["profile_image_url_https", "profile_image_url", "image_url_https", "image_url", "imageUrl", "url"]) {
+    if (typeof value[key] === "string" && value[key]) {
+      const avatar = normalizedAvatar(value[key]);
+      if (avatar) return avatar;
+    }
+  }
+  for (const nested of Object.values(value)) {
+    const found = deepAvatarUrl(nested, level + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+function responseBodyBytes(wrapped) {
+  const body = wrapped && wrapped.body;
+  if (body == null) return [];
+  if (Array.isArray(body)) return body.map(value => Number(value) & 255);
+  if (typeof body === "object" && Array.isArray(body.data)) {
+    return body.data.map(value => Number(value) & 255);
+  }
+  if (typeof body !== "string") return [];
+  const trimmed = body.trim();
+  if (trimmed.startsWith("data:image/")) {
+    const comma = trimmed.indexOf(",");
+    return comma >= 0 ? base64ToBytes(trimmed.slice(comma + 1)) : [];
+  }
+  if (/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed) && trimmed.length >= 24 && trimmed.length % 4 === 0) {
+    const decoded = base64ToBytes(trimmed);
+    if (decoded.length > 0) return decoded;
+  }
+  return binaryStringToBytes(body);
 }
 
 function expandedTweetText(fullText, legacyEntities, note, mappings) {
@@ -1032,7 +2444,11 @@ function extractMedia(result, legacy) {
     && result.note_tweet.note_tweet_results.result;
   const noteMedia = mediaEntityEntries(note && note.entity_set && note.entity_set.media);
   const modern = mediaEntityEntries(result && result.media_entities);
-  const entries = extended.concat(direct, noteMedia, modern);
+  const topExtended = mediaEntityEntries(result && result.extended_entities && result.extended_entities.media);
+  const topEntities = mediaEntityEntries(result && result.entities && result.entities.media);
+  const attached = mediaEntityEntries(result && result.attachments && result.attachments.media);
+  const scanned = mediaEntityEntries(mediaNodesFromResult(result));
+  const entries = extended.concat(direct, noteMedia, modern, topExtended, topEntities, attached, scanned);
 
   for (const entry of entries) {
     const item = mediaFromEntity(entry);
@@ -1040,6 +2456,33 @@ function extractMedia(result, legacy) {
   }
 
   return dedupeBy(media, item => item.url);
+}
+
+function mediaNodesFromResult(result) {
+  const nodes = [];
+  const seen = new Set();
+  collectMediaNodes(result, nodes, seen, 0);
+  return nodes;
+}
+
+function collectMediaNodes(node, nodes, seen, depth) {
+  if (!node || typeof node !== "object" || depth > 5 || seen.has(node)) return;
+  seen.add(node);
+
+  if (node.media_results || node.media_info || node.video_info) {
+    nodes.push(node);
+    return;
+  }
+
+  if (Array.isArray(node)) {
+    for (const item of node) collectMediaNodes(item, nodes, seen, depth + 1);
+    return;
+  }
+
+  for (const key of Object.keys(node)) {
+    if (key === "quoted_status_result" || key === "quoted") continue;
+    collectMediaNodes(node[key], nodes, seen, depth + 1);
+  }
 }
 
 function mediaEntityEntries(value) {
@@ -1683,11 +3126,12 @@ function bottomCursor(instructions) {
 
 function tweetToItem(tweet) {
   const item = Item.createWithUriDate(tweet.url, tweet.date || new Date());
-  const body = tweetBody(tweet);
-  if (body) item.body = body;
-  if (tweet.contentWarning) item.contentWarning = tweet.contentWarning;
-
   item.author = tweetIdentity(tweet);
+
+  const body = tweetBody(tweet);
+  if (body) item.body = body + connectorDebugBodySuffix();
+
+  if (tweet.contentWarning) item.contentWarning = tweet.contentWarning;
 
   const annotations = tweetAnnotations(tweet);
   if (annotations.length > 0) item.annotations = annotations;
@@ -1695,14 +3139,17 @@ function tweetToItem(tweet) {
   const attachments = tweetAttachments(tweet);
   if (attachments.length > 0) item.attachments = attachments;
 
-  item.actions = tweetActions(tweet);
+  item.actions = attachItemDiagnostics(tweetActions(tweet), tweet, item.author);
 
   return item;
 }
 
 function tweetBody(tweet) {
   const text = tweetBodyText(tweet);
-  const body = text.trim() ? `<p>${linkifiedText(text)}</p>` : "";
+  const trimmed = trimBodyText(text);
+  let body = trimmed ? `<p>${linkifiedText(trimmed)}</p>` : "";
+  body += videoPreviewHtml(tweet);
+  body = scrubMediaPlaceholderUrlsFromBody(body, tweet);
   if (!inlineMediaFallbackNeeded(tweet)) return body;
 
   const media = tweet.media
@@ -1711,6 +3158,33 @@ function tweetBody(tweet) {
     .filter(Boolean)
     .join("");
   return body + media;
+}
+
+function videoPreviewHtml(tweet) {
+  if (!showMedia() || (!tweetHasMedia(tweet) && !tweet._mediaLookup)) return "";
+
+  const video = primaryVideoMedia(tweet);
+  const poster = videoPosterUrl(video);
+  if (!poster) return "";
+
+  // ponytail: Loom shows "Player for URL" for native video; inline poster improves timeline preview
+  return `<p><img src="${escapeAttribute(poster)}" alt="${escapeAttribute(mediaDescription(video, tweet))}"></p>`;
+}
+
+function scrubMediaPlaceholderUrlsFromBody(body, tweet) {
+  if (!body || (!tweetHasMedia(tweet) && !tweet._mediaLookup)) return body;
+  return String(body)
+    .replace(/\s*https?:\/\/t\.co\/\w+/gi, "")
+    .replace(/\s*t\.co\/\w+/gi, "");
+}
+
+function usableVideoPosterUrl(thumbnail) {
+  const value = String(thumbnail || "");
+  if (value.startsWith("data:image/")) return value;
+  if (isWebUrl(value) && shouldEmbedAvatarUrl(value)) {
+    return normalizedPhotoUrl(value);
+  }
+  return null;
 }
 
 function inlineMediaFallbackNeeded(tweet) {
@@ -1746,11 +3220,36 @@ function inlineMediaFallback(media) {
 }
 
 function tweetBodyText(tweet) {
+  let text = tweet && tweet.text ? tweet.text : "";
+  text = stripLeadingReplyMentions(text, tweet);
   const card = linkCardForTweet(tweet);
-  const text = tweet && tweet.text ? tweet.text : "";
-  if (card) return textWithoutCardUrl(text, card.hiddenUrls || [card.url]);
-  if (hasRenderableMedia(tweet)) return textWithoutCardUrl(text, tweet.hiddenUrls || mediaHiddenUrls(tweet.media));
+  const hidden = dedupeStrings([
+    ...(card && card.hiddenUrls ? card.hiddenUrls : []),
+    ...(tweet.hiddenUrls || []),
+    ...(tweetHasMedia(tweet) || tweet._mediaLookup ? placeholderUrlsFromTweetText(text) : [])
+  ]);
+  if (hidden.length > 0) text = textWithoutCardUrl(text, hidden);
   return text;
+}
+
+function trimBodyText(value) {
+  return String(value || "").replace(/^[ \t]+/, "").replace(/[ \t]+$/, "");
+}
+
+function stripLeadingReplyMentions(text, tweet) {
+  if (!tweet || !tweet.isReply) return text;
+
+  let remaining = String(text || "").trimStart();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const match = remaining.match(/^@([A-Za-z0-9_]{1,15})(?:\s+|$)/);
+    if (!match) break;
+    remaining = remaining.slice(match[0].length).trimStart();
+    changed = true;
+  }
+
+  return remaining;
 }
 
 function tweetIdentity(tweet) {
@@ -1760,25 +3259,19 @@ function tweetIdentity(tweet) {
 }
 
 function createIdentity(name, username, avatar, uri) {
-  // Property assignment is the most compatible path across Loom API versions.
-  if (typeof Identity !== "undefined" && typeof Identity.createWithName === "function") {
-    try {
-      const identity = Identity.createWithName(name);
-      if (username) identity.username = username;
-      if (avatar) identity.avatar = avatar;
-      if (uri) identity.uri = uri;
-      return identity;
-    }
-    catch (error) {
-      // Fall through to the positional constructor if this runtime only partially supports the API.
-    }
+  const avatarUrl = avatarForIdentity(avatar);
+  const handle = username || null;
+  const profileUri = uri || null;
+
+  if (typeof Identity === "undefined" || typeof Identity.createWithName !== "function") {
+    throw new Error("Loom does not provide Identity.createWithName.");
   }
 
-  if (typeof Identity !== "undefined" && typeof Identity.create === "function") {
-    return Identity.create(name, username || null, avatar || null, uri || null);
-  }
-
-  throw new Error("Loom does not provide an Identity constructor.");
+  const identity = Identity.createWithName(name);
+  if (handle) identity.username = handle;
+  if (profileUri) identity.uri = profileUri;
+  if (avatarUrl != null) identity.avatar = avatarUrl;
+  return identity;
 }
 
 function tweetAnnotations(tweet) {
@@ -1816,10 +3309,8 @@ function tweetAttachments(tweet) {
   const poll = tweetPollAttachment(tweet);
   if (poll) attachments.push(poll);
 
-  if (attachments.length === 0) {
-    const link = tweetLinkAttachment(tweet);
-    if (link) attachments.push(link);
-  }
+  const link = tweetLinkAttachment(tweet);
+  if (link) attachments.push(link);
 
   const quote = quotedTweetAttachment(tweet);
   if (quote) attachments.push(quote);
@@ -1884,11 +3375,13 @@ function tweetLinkAttachment(tweet) {
 
 function linkCardForTweet(tweet) {
   if (!showLinkCards() || !nativeLinkAvailable() || !tweet) return null;
-  if (hasRenderableMedia(tweet) || hasRenderablePoll(tweet)) return null;
+  if (hasRenderablePoll(tweet)) return null;
 
   const card = tweet.card || {};
-  const url = card.url || firstExternalUrl(tweet.externalUrls);
+  const url = linkCardSourceUrl(tweet);
   if (!isExternalWebUrl(url)) return null;
+  if (hasRenderableMedia(tweet) && !cardHasMetadata({ ...card, url })) return null;
+
   const hasXCard = Boolean(card.url);
 
   return {
@@ -2106,10 +3599,11 @@ function quotedTweetAttachment(tweet) {
   if (!tweet.quoted || typeof Item === "undefined") return null;
 
   const quote = Item.createWithUriDate(tweet.quoted.url, tweet.quoted.date || new Date());
-  const body = tweetBody(tweet.quoted);
-  if (body) quote.body = body;
-  if (tweet.quoted.contentWarning) quote.contentWarning = tweet.quoted.contentWarning;
   quote.author = tweetIdentity(tweet.quoted);
+
+  const body = tweetBody(tweet.quoted);
+  if (body) quote.body = body + connectorDebugBodySuffix();
+  if (tweet.quoted.contentWarning) quote.contentWarning = tweet.quoted.contentWarning;
 
   const attachments = tweetMediaAttachments(tweet.quoted);
   if (attachments.length === 0) {
@@ -2117,18 +3611,48 @@ function quotedTweetAttachment(tweet) {
     if (link) attachments.push(link);
   }
   if (attachments.length > 0) quote.attachments = attachments;
-  quote.actions = tweetActions(tweet.quoted);
+  quote.actions = attachItemDiagnostics(tweetActions(tweet.quoted), tweet.quoted, quote.author);
 
   return quote;
 }
 
 function tweetActions(tweet) {
-  if (!tweet || !tweet.id) return {};
+  const actions = {
+    _connectorBuild: connectorEntryStamp()
+  };
+  if (!tweet || !tweet.id) return actions;
+
+  const payload = JSON.stringify({
+    tweetId: tweet.id,
+    url: tweet.url
+  });
+  actions.thread = payload;
+
+  const engagement = engagementActionsForTweet(tweet);
+  if (engagement.like) actions.like = engagement.like;
+  if (engagement.unlike) actions.unlike = engagement.unlike;
+  if (engagement.repost) actions.repost = engagement.repost;
+  if (engagement.unrepost) actions.unrepost = engagement.unrepost;
+
+  const card = linkCardForTweet(tweet);
+  const openUrl = (card && card.url) || (tweetHasVideoMedia(tweet) ? articleUrlForTweet(tweet) : null);
+  if (openUrl) {
+    actions.openLink = JSON.stringify({ url: openUrl });
+  }
+
+  return actions;
+}
+
+function engagementActionsForTweet(tweet) {
+  const payload = JSON.stringify({
+    tweetId: tweet.id,
+    url: tweet.url
+  });
   return {
-    thread: JSON.stringify({
-      tweetId: tweet.id,
-      url: tweet.url
-    })
+    like: tweet.favorited ? null : payload,
+    unlike: tweet.favorited ? payload : null,
+    repost: tweet.retweeted ? null : payload,
+    unrepost: tweet.retweeted ? payload : null
   };
 }
 
@@ -2339,6 +3863,13 @@ function normalizedSearchQueryId() {
 function normalizedUserByScreenNameQueryId() {
   const value = stringInput("user_by_screen_name_query_id").trim();
   return value || defaultUserByScreenNameQueryId;
+}
+
+function normalizedUserByRestIdQueryId() {
+  const configured = stringInput("user_by_rest_id_query_id").trim();
+  if (configured) return configured;
+  const cached = readQueryIdCache("UserByRestId");
+  return cached || defaultUserByRestIdQueryId;
 }
 
 function normalizedUserTweetsQueryId() {
@@ -2818,15 +4349,76 @@ function formatCount(value) {
   return number.toLocaleString("en-US");
 }
 
+function upgradeTwimgProfileAvatar(value) {
+  if (!value || !/\/profile_images\//.test(value) || !/\.twimg\.com/i.test(value)) {
+    return value;
+  }
+  return value.replace(/_normal(?=\.|$|\?)/, "_400x400");
+}
+
+function coerceWebUrlCandidate(raw) {
+  const trimmed = String(raw).trim();
+  if (trimmed.startsWith("//")) return `https:${trimmed}`;
+  if (!/^https?:\/\//i.test(trimmed) && /^[\w.-]+\.twimg\.com\//i.test(trimmed)) {
+    return `https://${trimmed}`;
+  }
+  return trimmed;
+}
+
 function normalizedAvatar(value) {
-  if (!isWebUrl(value)) return null;
-  return String(value).trim();
+  if (value == null) return null;
+  if (typeof value !== "string") return null;
+
+  const raw = cleanAvatarString(value);
+  if (!raw) return null;
+  if (raw.startsWith("data:image/")) return raw;
+
+  const candidate = coerceWebUrlCandidate(raw);
+  if (isWebUrl(candidate)) {
+    try {
+      const url = new URL(candidate);
+      if (url.protocol === "http:" && /\.twimg\.com$/i.test(url.hostname.replace(/^www\./, ""))) {
+        url.protocol = "https:";
+        return upgradeTwimgProfileAvatar(url.toString());
+      }
+      return upgradeTwimgProfileAvatar(candidate);
+    }
+    catch (error) {
+      const fallback = upgradeTwimgProfileAvatar(candidate.replace(/^http:\/\//i, "https://"));
+      if (fallback) return fallback;
+    }
+  }
+
+  return permissiveTwimgAvatar(raw);
+}
+
+function avatarForIdentity(value) {
+  if (value == null) return null;
+  if (typeof value !== "string" || !value.trim()) return null;
+  const raw = String(value).trim();
+  if (raw.startsWith("data:image/")) return raw;
+  return normalizedAvatar(raw);
+}
+
+function binaryStringToBytes(value) {
+  const bytes = [];
+  const text = String(value || "");
+  for (let index = 0; index < text.length; index += 1) {
+    bytes.push(text.charCodeAt(index) & 255);
+  }
+  return bytes;
 }
 
 function isExternalWebUrl(value) {
   if (!isWebUrl(value)) return false;
   const host = urlHost(value);
   return host && host !== "x.com" && host !== "twitter.com" && host !== "t.co";
+}
+
+function isInternalPostUrl(value) {
+  if (!isWebUrl(value)) return false;
+  const host = urlHost(value);
+  return host === "t.co" || host === "x.com" || host === "twitter.com";
 }
 
 function isWebUrl(value) {
@@ -2871,23 +4463,25 @@ function normalizedUrlForCompare(value) {
 
 function textWithoutCardUrl(value, hiddenUrls) {
   let text = String(value || "");
-  const variantValues = [];
-  for (const url of hiddenUrls || []) {
-    variantValues.push(...urlVariants(url));
-  }
-  const variants = dedupeStrings(variantValues).sort((left, right) => right.length - left.length);
+  const variants = dedupeStrings((hiddenUrls || []).flatMap(url => urlVariants(url)))
+    .sort((left, right) => right.length - left.length);
 
-  for (const variant of variants) {
-    const index = text.lastIndexOf(variant);
-    if (index < 0) continue;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const variant of variants) {
+      const index = text.lastIndexOf(variant);
+      if (index < 0) continue;
 
-    const before = text.slice(0, index);
-    const after = text.slice(index + variant.length);
-    if (before && !/\s$/.test(before)) continue;
-    if (!/^[\s),.!?:;]*$/.test(after)) continue;
+      const before = text.slice(0, index);
+      const after = text.slice(index + variant.length);
+      if (before && !/\s$/.test(before)) continue;
+      if (!/^[\s),.!?:;]*$/.test(after)) continue;
 
-    text = before.trimEnd();
-    break;
+      text = before.trimEnd();
+      changed = true;
+      break;
+    }
   }
 
   return text;
@@ -2915,7 +4509,7 @@ function urlVariants(value) {
 }
 
 function linkifiedText(value) {
-  const text = String(value || "");
+  const text = htmlDecode(String(value || ""));
   const regex = /(https?:\/\/[^\s<]+)|(^|[^\w/])@([A-Za-z0-9_]{1,15})\b|(^|[^\w/])#([A-Za-z0-9_]+)\b|(^|[^\w/])\$([A-Za-z][A-Za-z0-9_]{0,9})\b/g;
   let html = "";
   let lastIndex = 0;
@@ -2924,8 +4518,17 @@ function linkifiedText(value) {
     html += escapeHtml(text.slice(lastIndex, match.index));
     if (match[1]) {
       const parts = splitTrailingUrlPunctuation(match[1]);
-      html += linkedText(parts.url, displayUrl(parts.url));
-      html += escapeHtml(parts.trailing);
+      if (isInternalPostUrl(parts.url)) {
+        // ponytail: skip t.co/x.com placeholders so Loom does not auto-build empty link cards
+      }
+      else if (isExternalWebUrl(parts.url)) {
+        html += linkedText(parts.url, displayUrl(parts.url));
+        html += escapeHtml(parts.trailing);
+      }
+      else {
+        html += escapeHtml(parts.url);
+        html += escapeHtml(parts.trailing);
+      }
     }
     else if (match[3]) {
       html += escapeHtml(match[2]);
@@ -2969,12 +4572,18 @@ function displayUrl(value) {
 }
 
 function htmlDecode(value) {
-  return String(value)
-    .replace(/&quot;/g, "\"")
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">");
+  let text = String(value);
+  for (let pass = 0; pass < 3; pass += 1) {
+    const decoded = text
+      .replace(/&quot;/g, "\"")
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">");
+    if (decoded === text) return text;
+    text = decoded;
+  }
+  return text;
 }
 
 function escapeHtml(value) {

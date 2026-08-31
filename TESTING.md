@@ -18,7 +18,7 @@ The mocked suite verifies:
 - Home feed parsing from `data.home.home_timeline_urt.instructions`
 - Promoted home-feed entries are filtered before rendering
 - Incremental sync state and connector version bumps
-- Author identity fields: name, username, URI, and avatar, including the property-assignment path used by current Loom and the positional-constructor fallback
+- Author identity fields: name, username, URI, and avatar via `Identity.createWithName` plus property assignment (see [simonbs/tapestry-plugins](https://github.com/simonbs/tapestry-plugins) YouTube/Slack plugins for the canonical pattern)
 - Stable X profile-image URLs, including the newer `avatar.image_url` field
 - Post body escaping, linkification, and media/preview URL removal
 - Legacy and modern X media entities for photos, videos, GIF thumbnails, poll, quoted-post, and metric annotations
@@ -84,3 +84,18 @@ For each mode, inspect a small sample of items and confirm:
 For the avatar and rich-link regressions specifically, use one post whose author
 avatar URL comes from X's `avatar.image_url` field and one post whose link has no
 X card metadata but does expose Open Graph or Twitter Card tags.
+
+After changing connector code, confirm Loom picked up the new build:
+
+1. **Web Inspector console** on Load:
+```
+[local.x.timeline] load build=2026-08-31T07:30Z-entry-stamp release=1.3.17 plugin=22 avatars=embedded-data-url entryStamp=actions._connectorBuild+body-comment
+```
+
+2. **Item metadata** (inspect any loaded post):
+- `actions._connectorBuild` = `2026-08-31T07:33Z-avatar-diag@plugin23@1.3.18`
+- `actions._authorAvatarInput` = `data:9611` (or `url:pbs.twimg.com`, or `missing`)
+- `actions._authorAvatarAssigned` = same shape — if input is `data:N` but `author.avatar` is nil, Loom is dropping Identity.avatar on the native bridge
+- `body` ends with `<!-- local.x.timeline ... -->`
+
+Bump `connectorBuildId` in `plugin.js` whenever you need a fresh reload smoke test.
