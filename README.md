@@ -12,8 +12,8 @@ can also prefill a handle from an `@handle`, X profile URL, Twitter profile URL,
 or status URL.
 
 For easier setup, run `node scripts/x-cookie-helper.mjs` from the repository
-root. It opens a temporary browser login session and copies the minimal X cookie
-header needed by the connector.
+root. It opens a temporary browser login session and copies `auth_token` for the
+connector’s **auth_token** / **ct0** fields.
 
 See [local.x.timeline/README.md](local.x.timeline/README.md) for setup,
 security notes, and development instructions. See [TESTING.md](TESTING.md) for

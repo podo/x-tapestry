@@ -1,22 +1,16 @@
 {
   "inputs": [
     {
-      "name": "cookie_header",
-      "type": "text",
-      "prompt": "Cookie Header",
-      "placeholder": "auth_token=...; ct0=..."
-    },
-    {
       "name": "auth_token",
       "type": "text",
       "prompt": "auth_token Cookie",
-      "placeholder": "Paste auth_token if not using Cookie Header"
+      "placeholder": "Paste auth_token from a logged-in x.com session"
     },
     {
       "name": "ct0",
       "type": "text",
       "prompt": "ct0 Cookie",
-      "placeholder": "Paste ct0 if not using Cookie Header"
+      "placeholder": "Paste ct0 from a logged-in x.com session"
     },
     {
       "name": "source_mode",
@@ -105,7 +99,7 @@
       "type": "text",
       "prompt": "Advanced: Following Feed ID",
       "placeholder": "Leave blank for bundled value",
-      "value": "BKB7oi212Fi7kQtCBGE4zA"
+      "value": "0dateTVgvXjpkf7kyBZy0g"
     },
     {
       "name": "bookmarks_query_id",
@@ -133,28 +127,28 @@
       "type": "text",
       "prompt": "Advanced: SearchTimeline ID",
       "placeholder": "Leave blank for bundled value",
-      "value": "Bcw3RzK-PatNAmbnw54hFw"
+      "value": "Yw6L66Pw54NHKuq4Dp7b4Q"
     },
     {
       "name": "user_by_screen_name_query_id",
       "type": "text",
       "prompt": "Advanced: User Lookup ID",
       "placeholder": "Leave blank for bundled value",
-      "value": "2qvSHpkWTMS9i0zJAwDNiA"
+      "value": "IGgvgiOx4QZndDHuD3x9TQ"
     },
     {
       "name": "user_tweets_query_id",
       "type": "text",
       "prompt": "Advanced: User Tweets ID",
       "placeholder": "Leave blank for bundled value",
-      "value": "hr4gzZONlq23okjU8fIe_A"
+      "value": "36rb3Xj3iJ64Q-9wKDjCcQ"
     },
     {
       "name": "tweet_detail_query_id",
       "type": "text",
       "prompt": "Advanced: Tweet Detail ID",
       "placeholder": "Leave blank for bundled value",
-      "value": "97JF30KziU00483E_8elBA"
+      "value": "oCon7R-cgWRFy6EfZjaKfg"
     },
     {
       "name": "bearer_token",

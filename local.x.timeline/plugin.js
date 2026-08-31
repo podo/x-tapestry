@@ -4,19 +4,19 @@
 const apiBase = "https://x.com/i/api/graphql";
 const xHomeUrl = "https://x.com/";
 const xIconUrl = "https://x.com/favicon.ico";
-const defaultHomeLatestTimelineQueryId = "BKB7oi212Fi7kQtCBGE4zA";
+const defaultHomeLatestTimelineQueryId = "0dateTVgvXjpkf7kyBZy0g";
 const defaultHomeTimelineQueryId = "7zlnp2TxC044W4C1ZUJMHw";
 const defaultBookmarksQueryId = "XD0ViOeSOW4YoeNTGjVaYw";
 const defaultListLatestTweetsTimelineQueryId = "FVWmROVvhgjRPC-4jAUh8A";
 const defaultNotificationsTimelineQueryId = "gzC0OYBCnfdYS4M4Gue7BA";
-const defaultSearchTimelineQueryId = "Bcw3RzK-PatNAmbnw54hFw";
-const defaultUserByScreenNameQueryId = "2qvSHpkWTMS9i0zJAwDNiA";
-const defaultUserTweetsQueryId = "hr4gzZONlq23okjU8fIe_A";
+const defaultSearchTimelineQueryId = "Yw6L66Pw54NHKuq4Dp7b4Q";
+const defaultUserByScreenNameQueryId = "IGgvgiOx4QZndDHuD3x9TQ";
+const defaultUserTweetsQueryId = "36rb3Xj3iJ64Q-9wKDjCcQ";
 const defaultUserByRestIdQueryId = "DaeC_2LfMgwCujE03HSZtw";
 const fallbackUserByRestIdQueryIds = ["xvmVfRLmnr1alc5f2dib0Q"];
 const fxTwitterProfileBase = "https://api.fxtwitter.com/2/profile";
 const fxTwitterStatusBase = "https://api.fxtwitter.com";
-const defaultTweetDetailQueryId = "97JF30KziU00483E_8elBA";
+const defaultTweetDetailQueryId = "oCon7R-cgWRFy6EfZjaKfg";
 const defaultFavoriteTweetQueryId = "lI07N6Otwv1PhnEgXILM7A";
 const defaultUnfavoriteTweetQueryId = "ZYKSe-w7KEslx3JhSIk5LA";
 const defaultCreateRetweetQueryId = "ojPdsZsimiJrUGLR1sjUtA";
@@ -27,9 +27,9 @@ const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xn
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
 const syncStateKey = "syncStateV20";
-const connectorBuildId = "2026-08-31T20:40Z-feeds-actions-hardening";
-const connectorRelease = "1.4.0";
-const connectorPluginVersion = 50;
+const connectorBuildId = "2026-08-31T21:02Z-thread-chronological";
+const connectorRelease = "1.4.2";
+const connectorPluginVersion = 53;
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
@@ -203,7 +203,7 @@ async function performActionAsync(actionId, actionValue, item) {
     if (!tweetId) throw new Error("Could not determine the X post ID for this thread.");
 
     const credentials = normalizedCredentials();
-    return tweetDetailItems(tweetId, credentials);
+    return tweetDetailItems(tweetId, credentials, { order: "oldest" });
   }
 
   if (actionId === "openLink") {
@@ -410,7 +410,7 @@ async function verifyAsync() {
   logConnectorBuild("verify");
   const credentials = normalizedCredentials();
   const result = {
-    displayName: `X - ${sourceLabel()}`,
+    displayName: `X · ${sourceLabel()}`,
     icon: xIconUrl
   };
 
@@ -443,7 +443,7 @@ async function verifyAsync() {
     }
 
     if (profiles.length === 1) {
-      result.displayName = `X - @${profiles[0].username || handles[0]}`;
+      result.displayName = `X · @${profiles[0].username || handles[0]}`;
       if (profiles[0].avatar) result.icon = profiles[0].avatar;
     }
   }
@@ -979,9 +979,13 @@ async function enrichTweetAuthor(tweet, credentials) {
   }
 }
 
-async function tweetsToItems(tweets, credentials) {
+async function tweetsToItems(tweets, credentials, options = {}) {
   resetAvatarCache();
-  const normalized = sortTweetsNewestFirst(dedupeTweets(tweets));
+  const deduped = dedupeTweets(tweets);
+  const order = options && options.order === "oldest" ? "oldest" : "newest";
+  const normalized = order === "oldest"
+    ? sortTweetsOldestFirst(deduped)
+    : sortTweetsNewestFirst(deduped);
   return mapPool(normalized, maximumEnrichmentConcurrency, async (tweet) => {
     await enrichTweetAuthor(tweet, credentials);
     await enrichTweetMedia(tweet, credentials);
@@ -1704,9 +1708,10 @@ async function assertSessionHealthy(credentials) {
   catch (error) {
     const message = String(error && error.message || error);
     if (/401|403|unauthorized|forbidden|rejected the session|Refresh auth_token/i.test(message)) {
-      throw new Error("X session expired or rejected. Re-paste auth_token and ct0 (or a fresh Cookie header), then Verify again.");
+      throw new Error("X session expired or rejected. Re-paste auth_token and ct0, then Verify again.");
     }
-    throw error;
+    // X often answers account/settings with HTTP 404 / code 34 even when GraphQL auth still works.
+    console.log(`X account settings probe failed (${message}); continuing with provided cookies.`);
   }
 }
 
@@ -1870,7 +1875,7 @@ async function currentAccountIdentity(credentials) {
   }
 }
 
-async function tweetDetailItems(tweetId, credentials) {
+async function tweetDetailItems(tweetId, credentials, options = {}) {
   const data = await graphqlGet(
     "TweetDetail",
     normalizedTweetDetailQueryId(),
@@ -1891,7 +1896,7 @@ async function tweetDetailItems(tweetId, credentials) {
   );
 
   const tweets = dedupeTweets(extractTweetsFromInstructions(tweetDetailInstructions(data)));
-  const items = await tweetsToItems(tweets, credentials);
+  const items = await tweetsToItems(tweets, credentials, options);
   if (items.length > 0) return items;
   throw new Error("X did not return a conversation for this post.");
 }
@@ -2074,6 +2079,9 @@ function statusError(status, body, headers, action) {
   if (status === 400 && action !== "LinkPreview") {
     message = `X rejected the ${action || "GraphQL"} request. The query ID may have rotated; update the advanced ${action || "GraphQL"} query ID.`;
   }
+  else if (status === 404 && action !== "LinkPreview" && action !== "AccountSettings") {
+    message = `X returned HTTP 404 for ${action || "GraphQL"}. The query ID is likely stale; clear or update the advanced ${action || "GraphQL"} query ID.`;
+  }
   else if ((status === 401 || status === 403) && action !== "LinkPreview") {
     message = "X rejected the session cookies. Refresh auth_token and ct0 from a logged-in x.com session.";
   }
@@ -2150,9 +2158,11 @@ function delayMilliseconds(ms) {
 }
 
 function isQueryIdRetryableError(error) {
+  const status = error && error.xStatus;
   const message = error && error.message ? error.message : "";
-  return Boolean(error && error.xStatus === 400)
-    || /query ID|query id|must be defined|validation|PersistedQuery|operation/i.test(message);
+  return status === 400
+    || status === 404
+    || /query ID|query id|must be defined|validation|PersistedQuery|operation|page does not exist/i.test(message);
 }
 
 function firstGraphqlErrorMessage(body) {
@@ -4305,40 +4315,17 @@ function sanitizeHandle(value) {
 }
 
 function normalizedCredentials() {
-  const parsedCookie = parseCookieHeader(stringInput("cookie_header"));
-  const authToken = stringInput("auth_token").trim() || parsedCookie.auth_token;
-  const csrf = stringInput("ct0").trim() || parsedCookie.ct0;
+  const authToken = stringInput("auth_token").trim();
+  const csrf = stringInput("ct0").trim();
   if (!authToken || !csrf) {
-    throw new Error("Enter auth_token and ct0, or paste a full Cookie header containing both values.");
+    throw new Error("Enter both auth_token and ct0 from a logged-in x.com session.");
   }
 
   return {
     authToken,
     ct0: csrf,
-    cookie: completeCookieHeader(stringInput("cookie_header"), authToken, csrf)
+    cookie: `auth_token=${authToken}; ct0=${csrf}`
   };
-}
-
-function parseCookieHeader(value) {
-  const cookies = {};
-  const header = String(value || "").replace(/^cookie:\s*/i, "");
-  for (const part of header.split(";")) {
-    const index = part.indexOf("=");
-    if (index <= 0) continue;
-    const key = part.slice(0, index).trim();
-    const val = part.slice(index + 1).trim();
-    if (key) cookies[key] = val;
-  }
-  return cookies;
-}
-
-function completeCookieHeader(header, authToken, csrf) {
-  const trimmed = String(header || "").replace(/^cookie:\s*/i, "").trim();
-  const cookies = parseCookieHeader(trimmed);
-  const parts = trimmed ? trimmed.split(";").map(part => part.trim()).filter(Boolean) : [];
-  if (!cookies.auth_token) parts.push(`auth_token=${authToken}`);
-  if (!cookies.ct0) parts.push(`ct0=${csrf}`);
-  return parts.join("; ");
 }
 
 function normalizedSourceMode() {
@@ -4854,10 +4841,19 @@ function dedupeTweets(tweets) {
 }
 
 function sortTweetsNewestFirst(tweets) {
+  return sortTweetsByDate(tweets, "newest");
+}
+
+function sortTweetsOldestFirst(tweets) {
+  return sortTweetsByDate(tweets, "oldest");
+}
+
+function sortTweetsByDate(tweets, order) {
+  const newestFirst = order !== "oldest";
   return (tweets || []).slice().sort((left, right) => {
     const leftTime = left && left.date ? left.date.getTime() : 0;
     const rightTime = right && right.date ? right.date.getTime() : 0;
-    return rightTime - leftTime;
+    return newestFirst ? rightTime - leftTime : leftTime - rightTime;
   });
 }
 

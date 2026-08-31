@@ -12,7 +12,7 @@ bash scripts/build.sh
 The mocked suite verifies:
 
 - Connector metadata, UI inputs, suggestions, discovery, actions, and native-app mappings
-- Cookie-header parsing and missing-credential errors
+- auth_token / ct0 credential checks and missing-credential errors
 - Following Feed, Individual Accounts, and Search Query request paths
 - Following Feed GraphQL uses a JSON POST body with query ID and the expected variables
 - Home feed parsing from `data.home.home_timeline_urt.instructions`
@@ -61,7 +61,7 @@ If Loom has not saved the feed yet, pass its exported/supplied feed JSON with
 `--feed-json /path/to/feed.json`. Do not put cookie values in shell history or
 command output; use Loom's saved settings or a protected local config file.
 
-Use Tapestry Loom or Tapestry with a real X cookie header and create three feeds:
+Use Tapestry Loom or Tapestry with real X auth_token and ct0 values and create three feeds:
 
 - Source Mode: Following Feed
 - Source Mode: Individual Accounts, with at least two handles

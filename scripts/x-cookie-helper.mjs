@@ -60,18 +60,18 @@ try {
     throw new Error("Could not find both auth_token and ct0. Confirm the temporary browser is logged in to x.com.");
   }
 
-  const header = `auth_token=${authToken}; ct0=${csrf}`;
-  const copied = copyToClipboard(header);
+  const copied = copyToClipboard(authToken);
   if (copied) {
-    console.log(`Copied Cookie Header to clipboard. auth_token length=${authToken.length}; ct0 length=${csrf.length}.`);
+    console.log(`Copied auth_token to clipboard (length=${authToken.length}). Paste ct0 separately (length=${csrf.length}).`);
   }
   else {
     console.log(`Found cookies. auth_token length=${authToken.length}; ct0 length=${csrf.length}.`);
-    console.log("Could not copy to clipboard; rerun with --print if you need to show the header in the terminal.");
+    console.log("Could not copy to clipboard; rerun with --print to show both values in the terminal.");
   }
 
   if (shouldPrint) {
-    console.log(header);
+    console.log(`auth_token=${authToken}`);
+    console.log(`ct0=${csrf}`);
   }
 }
 finally {

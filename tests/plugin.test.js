@@ -307,7 +307,6 @@ function makeContext(overrides = {}) {
     URL,
     auth_token: "auth-token",
     ct0: "csrf-token",
-    cookie_header: "",
     source_mode: "Individual Accounts",
     x_sources: "openai, sama",
     query_suffix: "lang:en",
@@ -459,8 +458,8 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 50);
-  assert.match(source, /connectorBuildId = "2026-08-31T20:40Z-feeds-actions-hardening"/);
+  assert.strictEqual(pluginConfig.version, 53);
+  assert.match(source, /connectorBuildId = "2026-08-31T21:02Z-thread-chronological"/);
   assert.strictEqual(pluginConfig.default_color, "slate");
   assert.match(source, /videoPreviewHtml/);
   assert.match(source, /embedTweetMediaThumbnails/);
@@ -523,7 +522,7 @@ async function run() {
   vm.runInContext("verify()", context);
   await settle();
   assert.ifError(context.error);
-  assert.strictEqual(context.verification.displayName, "X - @openai, @sama");
+  assert.strictEqual(context.verification.displayName, "X · @openai, @sama");
   assert.strictEqual(context.verification.accountIdentity.username, "@podo");
   assert.match(context.verification.accountIdentity.avatar, /^data:image\/jpeg;base64,/);
 
@@ -577,12 +576,12 @@ async function run() {
     tweetId: "1950000000000000001",
     url: "https://x.com/openai/status/1950000000000000001"
   });
-  assert.match(item.actions._connectorBuild, /2026-08-31T20:40Z-feeds-actions-hardening@plugin50@1.4.0/);
+  assert.match(item.actions._connectorBuild, /2026-08-31T21:02Z-thread-chronological@plugin53@1.4.2/);
   assert.ok(item.actions._timelineAvatarRaw);
   assert.match(item.actions._authorAvatarInput, /^data:\d+$/);
   assert.match(item.actions._authorAvatarAssigned, /^data:\d+$/);
   assert.match(item.actions._authorAvatarLookup, /^(timeline|profile)\+embed$/);
-  assert.match(item.body, /<!-- local\.x\.timeline 2026-08-31T20:40Z-feeds-actions-hardening@plugin50@1.4.0 -->/);
+  assert.match(item.body, /<!-- local\.x\.timeline 2026-08-31T21:02Z-thread-chronological@plugin53@1.4.2 -->/);
   assert.ok(Number(item.actions._bodyAnchorCount) >= 1);
   assert.ok(Number(item.actions._externalUrlCount) >= 1);
   assert.match(item.actions._urlApi, /^(ok|missing)$/);
@@ -717,7 +716,7 @@ async function run() {
   vm.runInContext("verify()", following);
   await settle();
   assert.ifError(following.error);
-  assert.strictEqual(following.verification.displayName, "X - Following Feed");
+  assert.strictEqual(following.verification.displayName, "X · Following Feed");
   assert.strictEqual(following.verification.icon, "https://x.com/favicon.ico");
   const homeVerifyApi = apiCall(following, "HomeLatestTimeline");
   assert.ok(homeVerifyApi, "verify should call HomeLatestTimeline");
@@ -731,7 +730,7 @@ async function run() {
   assert.strictEqual(homeVerifyVariables.withCommunity, true);
   assert.strictEqual(homeVerifyVariables.enableRanking, false);
   assert.deepStrictEqual(homeVerifyVariables.seenTweetIds, []);
-  assert.strictEqual(JSON.parse(homeVerifyApi.parameters).queryId, "BKB7oi212Fi7kQtCBGE4zA");
+  assert.strictEqual(JSON.parse(homeVerifyApi.parameters).queryId, "0dateTVgvXjpkf7kyBZy0g");
 
   vm.runInContext("load()", following);
   await settle();
@@ -783,7 +782,7 @@ async function run() {
   vm.runInContext("verify()", forYou);
   await settle();
   assert.ifError(forYou.error);
-  assert.strictEqual(forYou.verification.displayName, "X - For You Feed");
+  assert.strictEqual(forYou.verification.displayName, "X · For You Feed");
   const forYouVerifyApi = apiCall(forYou, "HomeTimeline");
   assert.ok(forYouVerifyApi, "verify should call HomeTimeline for For You");
   assert.strictEqual(forYouVerifyApi.method, "POST");
@@ -813,7 +812,7 @@ async function run() {
   vm.runInContext("verify()", bookmarksFeed);
   await settle();
   assert.ifError(bookmarksFeed.error);
-  assert.strictEqual(bookmarksFeed.verification.displayName, "X - Bookmarks");
+  assert.strictEqual(bookmarksFeed.verification.displayName, "X · Bookmarks");
   assert.ok(apiCall(bookmarksFeed, "Bookmarks"), "verify should call Bookmarks");
   vm.runInContext("load()", bookmarksFeed);
   await settle();
@@ -828,7 +827,7 @@ async function run() {
   vm.runInContext("verify()", listFeed);
   await settle();
   assert.ifError(listFeed.error);
-  assert.match(listFeed.verification.displayName, /List 1539453138322673664/);
+  assert.match(listFeed.verification.displayName, /X · List 1539453138322673664/);
   const listApi = apiCall(listFeed, "ListLatestTweetsTimeline");
   assert.ok(listApi, "verify should call ListLatestTweetsTimeline");
   assert.strictEqual(graphqlVariables(listApi).listId, "1539453138322673664");
@@ -841,7 +840,7 @@ async function run() {
   vm.runInContext("verify()", mentionsFeed);
   await settle();
   assert.ifError(mentionsFeed.error);
-  assert.strictEqual(mentionsFeed.verification.displayName, "X - Mentions");
+  assert.strictEqual(mentionsFeed.verification.displayName, "X · Mentions");
   assert.ok(apiCall(mentionsFeed, "NotificationsTimeline"), "verify should call NotificationsTimeline");
 
   const openQuoteContext = makeContext();
@@ -1887,14 +1886,31 @@ async function run() {
 
   const threadContext = makeContext({
     threadTimeline: tweetDetailBody([
-      tweetResult({ id: "1950000000000000014", fullText: "First", legacy: { extended_entities: { media: [] }, entities: { urls: [] } } }),
-      tweetResult({ id: "1950000000000000015", username: "sama", name: "Sam Altman", fullText: "Second", legacy: { extended_entities: { media: [] }, entities: { urls: [] } } })
+      // API order is newest-first; thread action should return oldest-first.
+      tweetResult({
+        id: "1950000000000000015",
+        username: "sama",
+        name: "Sam Altman",
+        fullText: "Second",
+        created_at: "Fri Aug 28 09:00:00 +0000 2026",
+        legacy: { extended_entities: { media: [] }, entities: { urls: [] } }
+      }),
+      tweetResult({
+        id: "1950000000000000014",
+        fullText: "First",
+        created_at: "Fri Aug 28 08:00:00 +0000 2026",
+        legacy: { extended_entities: { media: [] }, entities: { urls: [] } }
+      })
     ])
   });
   vm.runInContext("performAction('thread', JSON.stringify({ tweetId: '1950000000000000014' }), null)", threadContext);
   await settle();
   assert.ifError(threadContext.actionError);
   assert.strictEqual(threadContext.actionResult.length, 2);
+  assert.strictEqual(threadContext.actionResult[0].uri, "https://x.com/openai/status/1950000000000000014");
+  assert.strictEqual(threadContext.actionResult[1].uri, "https://x.com/sama/status/1950000000000000015");
+  assert.match(bodyWithoutConnectorStamp(threadContext.actionResult[0].body), /First/);
+  assert.match(bodyWithoutConnectorStamp(threadContext.actionResult[1].body), /Second/);
   const threadApi = apiCall(threadContext, "TweetDetail");
   assert.ok(threadApi, "thread action should call TweetDetail");
   const threadVariables = JSON.parse(new URL(threadApi.url).searchParams.get("variables"));
@@ -1954,21 +1970,15 @@ async function run() {
   assert.ok(bookmarkContext.actionResult.actions.bookmark);
   assert.ok(!bookmarkContext.actionResult.actions.unbookmark);
 
-  const cookieOnly = makeContext({
-    auth_token: "",
-    ct0: "",
-    cookie_header: "foo=bar; auth_token=cookie-auth; ct0=cookie-csrf"
-  });
-  vm.runInContext("verify()", cookieOnly);
-  await settle();
-  assert.ifError(cookieOnly.error);
-  assert.match(apiCall(cookieOnly).headers.Cookie, /foo=bar/);
-  assert.strictEqual(apiCall(cookieOnly).headers["x-csrf-token"], "cookie-csrf");
-
-  const missingCredentials = makeContext({ auth_token: "", ct0: "", cookie_header: "" });
+  const missingCredentials = makeContext({ auth_token: "", ct0: "" });
   vm.runInContext("verify()", missingCredentials);
   await settle();
   assert.match(missingCredentials.error.message, /auth_token and ct0/);
+
+  const authOnlyMissingCt0 = makeContext({ auth_token: "auth-token", ct0: "" });
+  vm.runInContext("verify()", authOnlyMissingCt0);
+  await settle();
+  assert.match(authOnlyMissingCt0.error.message, /auth_token and ct0/);
 
   const queryIdError = makeContext({
     sendRequest: async (url, method, parameters, headers) => {
@@ -1984,6 +1994,45 @@ async function run() {
   vm.runInContext("load()", queryIdError);
   await settle();
   assert.match(queryIdError.error.message, /query ID/i);
+
+  const discoveredFrom404 = makeContext({
+    source_mode: "Following Feed",
+    x_sources: "",
+    use_transaction_header: "off",
+    home_latest_timeline_query_id: "staleHomeLatest"
+  });
+  discoveredFrom404.sendRequest = async (url, method, parameters, headers) => {
+    discoveredFrom404._calls.push({ url, method, parameters, headers });
+    if (url === "https://x.com/") {
+      return '<script src="https://abs.twimg.com/responsive-web/client-web/main.home.js"></script>';
+    }
+    if (url.includes("main.home.js")) {
+      return 'queryId:"freshHomeLatest",operationName:"HomeLatestTimeline"';
+    }
+    if (url.includes("/AccountSettings") || url.includes("account/settings.json")) {
+      return JSON.stringify({ screen_name: "podo" });
+    }
+    const action = graphqlAction(url);
+    if (action === "HomeLatestTimeline" && url.includes("/staleHomeLatest/")) {
+      return JSON.stringify({
+        status: 404,
+        headers: {},
+        body: { errors: [{ message: "Sorry, that page does not exist" }] }
+      });
+    }
+    if (action === "HomeLatestTimeline") {
+      return JSON.stringify(homeTimelineBody([
+        tweetResult({ id: "1950000000000000099", fullText: "Recovered following", legacy: { entities: { urls: [] }, extended_entities: { media: [] } } })
+      ]));
+    }
+    return JSON.stringify(timelineBody([]));
+  };
+  vm.runInContext("load()", discoveredFrom404);
+  await settle();
+  assert.ifError(discoveredFrom404.error);
+  assert.ok(discoveredFrom404._calls.some(call => String(call.url).includes("/staleHomeLatest/HomeLatestTimeline")));
+  assert.ok(discoveredFrom404._calls.some(call => String(call.url).includes("/freshHomeLatest/HomeLatestTimeline")));
+  assert.strictEqual(discoveredFrom404.results[0].body.includes("Recovered following") || discoveredFrom404.results.length > 0, true);
 
   const discovered = makeContext({
     x_sources: "openai",

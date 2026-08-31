@@ -8,16 +8,15 @@ or third-party tweet-pulling service.
 
 1. Run `node scripts/x-cookie-helper.mjs` from the repository root, log in to
    X in the temporary browser window, then press Enter in the terminal. The
-   helper copies a minimal `auth_token=...; ct0=...` cookie header to the
-   clipboard without printing the secret values.
+   helper copies `auth_token` to the clipboard (use `--print` to show both
+   values) without dumping secrets by default.
 2. If you prefer to do it manually, open `x.com` in a browser where you are
-   logged in, inspect a request to `x.com`, and copy either the full `Cookie`
-   request header or the individual `auth_token` and `ct0` cookie values.
+   logged in, inspect a request to `x.com`, and copy the `auth_token` and `ct0`
+   cookie values.
 3. Create a Tapestry feed with this connector. You can also use Feed Finder
    with an `@handle`, `x.com` profile URL, `twitter.com` profile URL, or status
    URL to prefill the handle.
-4. Paste the full cookie header into **Cookie Header**, or paste the individual
-   values into **auth_token Cookie** and **ct0 Cookie**.
+4. Paste the values into **auth_token Cookie** and **ct0 Cookie**.
 5. Set **Source Mode** to one of:
    - **For You Feed** — algorithmic home (`HomeTimeline`)
    - **Following Feed** — chronological home (`HomeLatestTimeline`)

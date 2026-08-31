@@ -5,6 +5,7 @@
 - When Loom behavior is unclear, compare against official Tapestry connectors and community repos (simonbs/tapestry-plugins, otaviocc/tapestry-connectors, chockenberry/TapestryConnectors).
 - Use the tapestry-connector skill and `loom_connector_harness.mjs` for supplemental Loom validation when UI automation is blocked.
 - Bump `connectorBuildId` in `plugin.js` when you need a definitive Loom reload smoke test via Web Inspector console logs.
+- Always bump the internal connector version together with behavior changes: `plugin-config.json` `version` and matching `connectorPluginVersion` in `plugin.js` (and `VERSION` / `connectorRelease` when shipping a release). Do not leave plugin version unchanged across Loom-facing fixes.
 - Prefer running the live harness and Loom reload checks yourself rather than only proposing a plan.
 - Keep external article URLs as clickable `<a href>` in `item.body`; do not strip them just because a `LinkAttachment` exists.
 - When durable Loom/connector lessons land, update the tapestry-connector skill (`references/loom-links-actions-feeds.md`) so agents stay in sync.
