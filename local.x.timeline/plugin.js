@@ -27,9 +27,9 @@ const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xn
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
 const syncStateKey = "syncStateV20";
-const connectorBuildId = "2026-08-31T21:40Z-drop-meta-host";
-const connectorRelease = "1.4.5";
-const connectorPluginVersion = 58;
+const connectorBuildId = "2026-08-31T22:05Z-1.4.6-service-visible";
+const connectorRelease = "1.4.6";
+const connectorPluginVersion = 60;
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
