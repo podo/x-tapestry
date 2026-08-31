@@ -27,9 +27,9 @@ const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xn
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
 const syncStateKey = "syncStateV20";
-const connectorBuildId = "2026-08-31T21:02Z-thread-chronological";
-const connectorRelease = "1.4.2";
-const connectorPluginVersion = 53;
+const connectorBuildId = "2026-08-31T22:20Z-load-budget";
+const connectorRelease = "1.4.3";
+const connectorPluginVersion = 54;
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
@@ -41,7 +41,9 @@ const linkPreviewCacheTtlMilliseconds = 7 * 24 * 60 * 60 * 1000;
 const maximumLinkPreviewBytes = 256 * 1024;
 const maximumLinkPreviewCacheEntries = 100;
 const maximumIncrementalPages = 5;
-const maximumEnrichmentConcurrency = 3;
+const maximumEnrichmentConcurrency = 6;
+const maximumTweetDetailFetchesPerLoad = 24;
+const loadTimeBudgetMilliseconds = 52 * 1000;
 const cardUpdateUrl = "https://x.com/i/cards/card_update";
 const maximumQueryIdScripts = 40;
 const transactionKeyword = "obfiowerehiring";
@@ -462,6 +464,7 @@ async function verifyAsync() {
 
 async function loadAsync() {
   logConnectorBuild("load");
+  resetLoadCycleCaches();
   const credentials = normalizedCredentials();
   await assertSessionHealthy(credentials);
   const mode = normalizedSourceMode();
@@ -628,11 +631,28 @@ async function loadHandleTimelines(credentials) {
 let loadAvatarCache = null;
 let loadAvatarDataUrlCache = null;
 let profileLookupCache = null;
+let loadCycleStartedAt = 0;
+let loadTweetDetailCache = null;
+let loadTweetDetailFetchCount = 0;
 
 function resetAvatarCache() {
   loadAvatarCache = new Map();
   loadAvatarDataUrlCache = new Map();
   profileLookupCache = new Map();
+}
+
+function resetLoadCycleCaches() {
+  loadCycleStartedAt = Date.now();
+  loadTweetDetailCache = new Map();
+  loadTweetDetailFetchCount = 0;
+}
+
+function loadBudgetExceeded() {
+  return loadCycleStartedAt > 0 && (Date.now() - loadCycleStartedAt) >= loadTimeBudgetMilliseconds;
+}
+
+function canFetchTweetDetail() {
+  return loadTweetDetailFetchCount < maximumTweetDetailFetchesPerLoad && !loadBudgetExceeded();
 }
 
 function shortRequestError(error) {
@@ -981,6 +1001,7 @@ async function enrichTweetAuthor(tweet, credentials) {
 
 async function tweetsToItems(tweets, credentials, options = {}) {
   resetAvatarCache();
+  if (!loadCycleStartedAt) resetLoadCycleCaches();
   const deduped = dedupeTweets(tweets);
   const order = options && options.order === "oldest" ? "oldest" : "newest";
   const normalized = order === "oldest"
@@ -1025,7 +1046,7 @@ async function enrichTweetMedia(tweet, credentials) {
 
   if (credentials && tweet.id) {
     try {
-      const detailTweet = await tweetFromTweetDetail(tweet.id, credentials);
+      const detailTweet = await loadTweetDetailForTweet(tweet, credentials);
       if (detailTweet && hasRenderableMedia(detailTweet)) {
         tweet.media = detailTweet.media;
         tweet.hiddenUrls = dedupeStrings((tweet.hiddenUrls || []).concat(detailTweet.hiddenUrls || []));
@@ -1038,7 +1059,7 @@ async function enrichTweetMedia(tweet, credentials) {
     }
   }
 
-  if (tweet.authorUsername && tweet.id) {
+  if (tweet.authorUsername && tweet.id && !loadBudgetExceeded()) {
     const fxMedia = await mediaFromFxTwitterStatus(tweet.authorUsername, tweet.id);
     if (fxMedia.length > 0) {
       tweet.media = fxMedia;
@@ -1173,11 +1194,41 @@ async function embedTweetMediaThumbnails(tweet) {
 }
 
 function tweetNeedsMediaBackfill(tweet) {
-  if ((tweet.hiddenUrls || []).length > 0) return true;
+  if (!tweet || hasRenderableMedia(tweet)) return false;
   const text = String(tweet.text || "");
   if (/[\u{1F3A5}\u{1F4F9}]/u.test(text)) return true;
-  if (/\bt\.co\/\w+/i.test(text) && !linkCardForTweet(tweet)) return true;
-  return false;
+  if (/\bt\.co\/\w+/i.test(text) && !linkCardForTweet(tweet) && !cardHasMetadata(tweet.card)) return true;
+  const placeholderUrls = (tweet.hiddenUrls || []).filter(url => isMediaPlaceholderUrl(url));
+  return placeholderUrls.length > 0;
+}
+
+async function loadTweetDetailForTweet(tweet, credentials) {
+  if (!tweet || !tweet.id || !credentials) return null;
+  if (tweet._detailTweet !== undefined) return tweet._detailTweet;
+
+  const cacheKey = String(tweet.id);
+  if (loadTweetDetailCache && loadTweetDetailCache.has(cacheKey)) {
+    tweet._detailTweet = loadTweetDetailCache.get(cacheKey);
+    return tweet._detailTweet;
+  }
+  if (!canFetchTweetDetail()) {
+    tweet._detailTweet = null;
+    if (loadTweetDetailCache) loadTweetDetailCache.set(cacheKey, null);
+    return null;
+  }
+
+  loadTweetDetailFetchCount += 1;
+  let detailTweet = null;
+  try {
+    detailTweet = await tweetFromTweetDetail(tweet.id, credentials);
+  }
+  catch (error) {
+    console.log(`Unable to load TweetDetail for ${tweet.id}: ${error.message || error}`);
+  }
+
+  tweet._detailTweet = detailTweet;
+  if (loadTweetDetailCache) loadTweetDetailCache.set(cacheKey, detailTweet);
+  return detailTweet;
 }
 
 async function tweetFromTweetDetail(tweetId, credentials) {
@@ -1275,7 +1326,7 @@ async function enrichTweetLinkCard(tweet, credentials) {
 
   if (!cardHasMetadata(tweet.card) && tweetWantsLinkCardEnrichment(tweet) && credentials && tweet.id) {
     try {
-      const detailCard = await cardFromTweetDetail(tweet.id, credentials);
+      const detailCard = await cardFromTweetDetail(tweet, credentials);
       if (cardHasMetadata(detailCard)) {
         tweet.card = mergeCards(tweet.card, detailCard);
         lookup = "tweetdetail";
@@ -1292,7 +1343,7 @@ async function enrichTweetLinkCard(tweet, credentials) {
     }
   }
 
-  if (!cardHasMetadata(tweet.card) && tweetWantsLinkCardEnrichment(tweet) && tweet.authorUsername && tweet.id) {
+  if (!cardHasMetadata(tweet.card) && tweetWantsLinkCardEnrichment(tweet) && tweet.authorUsername && tweet.id && !loadBudgetExceeded()) {
     const fxCard = await cardFromFxTwitterStatus(tweet.authorUsername, tweet.id);
     if (cardHasMetadata(fxCard)) {
       tweet.card = mergeCards(tweet.card, fxCard);
@@ -1304,7 +1355,7 @@ async function enrichTweetLinkCard(tweet, credentials) {
     }
   }
 
-  if (fetchLinkPreviews()) {
+  if (fetchLinkPreviews() && !loadBudgetExceeded()) {
     const shell = linkCardForTweet(tweet);
     if (shell && cardNeedsPreview(shell)) {
       const preview = await linkPreviewForUrl(shell.url);
@@ -1328,9 +1379,9 @@ async function enrichTweetLinkCard(tweet, credentials) {
   tweet._linkCardLookup = lookup;
 }
 
-async function cardFromTweetDetail(tweetId, credentials) {
-  const tweet = await tweetFromTweetDetail(tweetId, credentials);
-  return tweet && tweet.card ? tweet.card : null;
+async function cardFromTweetDetail(tweet, credentials) {
+  const detailTweet = await loadTweetDetailForTweet(tweet, credentials);
+  return detailTweet && detailTweet.card ? detailTweet.card : null;
 }
 
 async function cardFromFxTwitterStatus(username, tweetId) {
