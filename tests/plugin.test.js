@@ -460,8 +460,8 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 61);
-  assert.match(source, /connectorBuildId = "2026-08-31T22:25Z-1.4.7-load-budget"/);
+  assert.strictEqual(pluginConfig.version, 62);
+  assert.match(source, /connectorBuildId = "2026-09-01T06:00Z-1.4.8-feed-annotation"/);
   assert.strictEqual(pluginConfig.default_color, "slate");
   assert.strictEqual(pluginConfig.default_service_name_visibility, "visible");
   assert.strictEqual(pluginConfig.service_name, "X");
@@ -582,12 +582,12 @@ async function run() {
     tweetId: "1950000000000000001",
     url: "https://x.com/openai/status/1950000000000000001"
   });
-  assert.match(item.actions._connectorBuild, /2026-08-31T22:25Z-1.4.7-load-budget@plugin61@1.4.7/);
+  assert.match(item.actions._connectorBuild, /2026-09-01T06:00Z-1.4.8-feed-annotation@plugin62@1.4.8/);
   assert.ok(item.actions._timelineAvatarRaw);
   assert.match(item.actions._authorAvatarInput, /^data:\d+$/);
   assert.match(item.actions._authorAvatarAssigned, /^data:\d+$/);
   assert.match(item.actions._authorAvatarLookup, /^(timeline|profile)\+embed$/);
-  assert.match(item.body, /<!-- local\.x\.timeline 2026-08-31T22:25Z-1.4.7-load-budget@plugin61@1.4.7 -->/);
+  assert.match(item.body, /<!-- local\.x\.timeline 2026-09-01T06:00Z-1.4.8-feed-annotation@plugin62@1.4.8 -->/);
   assert.ok(Number(item.actions._bodyAnchorCount) >= 1);
   assert.ok(Number(item.actions._externalUrlCount) >= 1);
   assert.match(item.actions._urlApi, /^(ok|missing)$/);
@@ -609,6 +609,10 @@ async function run() {
   assert.ok(
     !item.annotations || !item.annotations.some(annotation => annotation.text === "@openai"),
     "normal posts should not duplicate author as a small annotation chip"
+  );
+  assert.ok(
+    item.annotations.some(annotation => annotation.text === "X · @openai, @sama"),
+    "feed type should appear as a native annotation above Service"
   );
   assert.strictEqual(item.author.username, "@openai");
   assert.match(item.author.uri, /https:\/\/x\.com\/openai/);
@@ -749,6 +753,10 @@ async function run() {
   await settle();
   assert.ifError(following.error);
   assert.strictEqual(following.results.length, 1);
+  assert.ok(
+    following.results[0].annotations.some(annotation => annotation.text === "X · Following Feed"),
+    "Following items should annotate feed type above Service"
+  );
   assert.strictEqual(following.results[0].author.username, "@verge");
   assert.match(following.results[0].author.avatar, /^data:image\/jpeg;base64,/);
   assert.strictEqual(following.results[0].attachments[0].kind, "link");
@@ -1902,6 +1910,13 @@ async function run() {
   assert.strictEqual(repost.results[0].annotations.find(a => /Reposted/.test(a.text)).text, "Reposted by @podo");
   assert.match(repost.results[0].annotations.find(a => /Reposted/.test(a.text)).icon, /^data:image\/jpeg;base64,/);
   assert.strictEqual(repost.results[0].annotations.find(a => /Reposted/.test(a.text)).uri, "https://x.com/podo");
+  assert.ok(
+    repost.results[0].annotations.some(annotation => annotation.text === "X · @openai, @sama"),
+    "retweets should still include feed-type annotation"
+  );
+  const repostFeedIndex = repost.results[0].annotations.findIndex(a => a.text === "X · @openai, @sama");
+  const repostedIndex = repost.results[0].annotations.findIndex(a => /Reposted/.test(a.text));
+  assert.ok(repostedIndex >= 0 && repostFeedIndex > repostedIndex, "feed type should follow Reposted annotation");
 
   const threadContext = makeContext({
     threadTimeline: tweetDetailBody([

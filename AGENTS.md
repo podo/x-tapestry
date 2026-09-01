@@ -4,13 +4,14 @@
 - Before releasing connector versions, validate in Loom visually (avatars, media posters, clickable body links, link cards)—not only unit tests or the redacted live harness.
 - When Loom behavior is unclear, compare against official Tapestry connectors and community repos (simonbs/tapestry-plugins, otaviocc/tapestry-connectors, chockenberry/TapestryConnectors).
 - Use the tapestry-connector skill and `loom_connector_harness.mjs` for supplemental Loom validation when UI automation is blocked.
-- Always bump versions with Loom-facing changes: `plugin-config.json` `version`, matching `connectorPluginVersion` in `plugin.js`, and `connectorBuildId` for reload smoke tests (plus `VERSION` / `connectorRelease` when shipping). Prefer running the live harness and Loom reload checks yourself rather than only proposing a plan.
+- Always bump versions with Loom-facing changes: `plugin-config.json` `version`, matching `connectorPluginVersion` in `plugin.js`, and `connectorBuildId` for reload smoke tests (plus `VERSION` / `connectorRelease` when shipping). Prefer running the live harness and Loom reload checks yourself rather than only proposing a plan. Ship by committing `VERSION` + built `XTapestry.tapestry`, pushing main, and letting `release.yml` create the GitHub release with `--generate-notes` (commit subject `Ship <version>: …`).
 - Keep external article URLs and @handles as clickable `<a href>` in `item.body`; do not strip article URLs just because a `LinkAttachment` exists.
 - When durable Loom/connector lessons land, update the tapestry-connector skill (`references/loom-links-actions-feeds.md`) so agents stay in sync.
 - Auth UI/credentials: `auth_token` + `ct0` only—do not expose or require a raw Cookie Header field.
-- Feed display names use the `X · …` pattern (e.g. `X · Following Feed`) for verify/feed list titles. Keep `default_service_name_visibility: "visible"` so card Service chrome stays `service_name` ("X"); `hidden` removes that chrome entirely.
+- Prefer feed type above author as a native annotation `X · {Feed Type}` (Service row stays static `service_name` "X"); use the same `X · …` pattern for verify/feed list titles. Keep `default_service_name_visibility: "visible"` (`hidden` removes Service chrome entirely).
 - Chronological thread ordering applies only when opening a thread via the thread action icon—not for ordinary item/detail navigation.
 - Retweet chrome: omit the small annotation avatar/@handle on non-retweets; for retweets, annotation is `Reposted by @reposter` and the main `Identity` is the original author.
+- Card stack: reply/repost annotations then feed-type annotation above Service; then Service → Author → body/attachments/actions; engagement metrics in `<small>` (same scale as reply-to chrome).
 
 ## Learned Workspace Facts
 
