@@ -460,10 +460,10 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 62);
-  assert.match(source, /connectorBuildId = "2026-09-01T06:00Z-1.4.8-feed-annotation"/);
+  assert.strictEqual(pluginConfig.version, 63);
+  assert.match(source, /connectorBuildId = "2026-09-01T06:30Z-1.4.9-hide-service"/);
   assert.strictEqual(pluginConfig.default_color, "slate");
-  assert.strictEqual(pluginConfig.default_service_name_visibility, "visible");
+  assert.strictEqual(pluginConfig.default_service_name_visibility, "hidden");
   assert.strictEqual(pluginConfig.service_name, "X");
   assert.match(source, /videoPreviewHtml/);
   assert.match(source, /embedTweetMediaThumbnails/);
@@ -582,12 +582,12 @@ async function run() {
     tweetId: "1950000000000000001",
     url: "https://x.com/openai/status/1950000000000000001"
   });
-  assert.match(item.actions._connectorBuild, /2026-09-01T06:00Z-1.4.8-feed-annotation@plugin62@1.4.8/);
+  assert.match(item.actions._connectorBuild, /2026-09-01T06:30Z-1.4.9-hide-service@plugin63@1.4.9/);
   assert.ok(item.actions._timelineAvatarRaw);
   assert.match(item.actions._authorAvatarInput, /^data:\d+$/);
   assert.match(item.actions._authorAvatarAssigned, /^data:\d+$/);
   assert.match(item.actions._authorAvatarLookup, /^(timeline|profile)\+embed$/);
-  assert.match(item.body, /<!-- local\.x\.timeline 2026-09-01T06:00Z-1.4.8-feed-annotation@plugin62@1.4.8 -->/);
+  assert.match(item.body, /<!-- local\.x\.timeline 2026-09-01T06:30Z-1.4.9-hide-service@plugin63@1.4.9 -->/);
   assert.ok(Number(item.actions._bodyAnchorCount) >= 1);
   assert.ok(Number(item.actions._externalUrlCount) >= 1);
   assert.match(item.actions._urlApi, /^(ok|missing)$/);

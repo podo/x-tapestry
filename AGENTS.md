@@ -8,10 +8,10 @@
 - Keep external article URLs and @handles as clickable `<a href>` in `item.body`; do not strip article URLs just because a `LinkAttachment` exists.
 - When durable Loom/connector lessons land, update the tapestry-connector skill (`references/loom-links-actions-feeds.md`) so agents stay in sync.
 - Auth UI/credentials: `auth_token` + `ct0` only—do not expose or require a raw Cookie Header field.
-- Prefer feed type above author as a native annotation `X · {Feed Type}` (Service row stays static `service_name` "X"); use the same `X · …` pattern for verify/feed list titles. Keep `default_service_name_visibility: "visible"` (`hidden` removes Service chrome entirely).
+- Prefer feed type above author as a native annotation `X · {Feed Type}`; hide static Service chrome (`default_service_name_visibility: "hidden"`) so bare `service_name` "X" does not duplicate it. Use the same `X · …` pattern for verify/feed list titles.
 - Chronological thread ordering applies only when opening a thread via the thread action icon—not for ordinary item/detail navigation.
 - Retweet chrome: omit the small annotation avatar/@handle on non-retweets; for retweets, annotation is `Reposted by @reposter` and the main `Identity` is the original author.
-- Card stack: reply/repost annotations then feed-type annotation above Service; then Service → Author → body/attachments/actions; engagement metrics in `<small>` (same scale as reply-to chrome).
+- Card stack: reply/repost annotations then feed-type annotation above Author (Service hidden); then Author → body/attachments/actions; engagement metrics in `<small>` (same scale as reply-to chrome).
 
 ## Learned Workspace Facts
 

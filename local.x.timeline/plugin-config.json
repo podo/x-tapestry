@@ -3,7 +3,7 @@
   "display_name": "X",
   "service_name": "X",
   "default_color": "slate",
-  "default_service_name_visibility": "visible",
+  "default_service_name_visibility": "hidden",
   "icon": "https://x.com/favicon.ico",
   "item_style": "post",
   "site": "https://x.com",
@@ -11,5 +11,5 @@
   "verify_variables": true,
   "provides_attachments": true,
   "minimum_app_version": "1.4",
-  "version": 62
+  "version": 63
 }
