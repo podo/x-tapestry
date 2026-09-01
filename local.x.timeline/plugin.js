@@ -27,9 +27,9 @@ const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xn
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
 const syncStateKey = "syncStateV20";
-const connectorBuildId = "2026-09-01T06:30Z-1.4.9-hide-service";
-const connectorRelease = "1.4.9";
-const connectorPluginVersion = 63;
+const connectorBuildId = "2026-09-01T06:40Z-1.4.10-service-feed-name";
+const connectorRelease = "1.4.10";
+const connectorPluginVersion = 64;
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
@@ -3811,8 +3811,8 @@ function createIdentity(name, username, avatar, uri) {
 function tweetAnnotations(tweet) {
   const annotations = [];
 
-  // Loom renders native annotations above Service/Author.
-  // Arrival context first, then feed type (Service row itself stays static "X").
+  // Loom renders native annotations above Service/Author. Keep only arrival context.
+  // Feed type lives in plugin-config service_name (Service chrome size), not here.
   if (tweet.repostedByUsername || tweet.repostedByName) {
     const text = tweet.repostedByUsername
       ? `Reposted by @${tweet.repostedByUsername}`
@@ -3828,8 +3828,6 @@ function tweetAnnotations(tweet) {
     if (tweet.replyToUsername) reply.uri = `https://x.com/${tweet.replyToUsername}`;
     annotations.push(reply);
   }
-
-  annotations.push(Annotation.createWithText(feedDisplayName()));
   return annotations;
 }
 

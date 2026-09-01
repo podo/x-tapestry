@@ -460,11 +460,11 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 63);
-  assert.match(source, /connectorBuildId = "2026-09-01T06:30Z-1.4.9-hide-service"/);
+  assert.strictEqual(pluginConfig.version, 64);
+  assert.match(source, /connectorBuildId = "2026-09-01T06:40Z-1.4.10-service-feed-name"/);
   assert.strictEqual(pluginConfig.default_color, "slate");
-  assert.strictEqual(pluginConfig.default_service_name_visibility, "hidden");
-  assert.strictEqual(pluginConfig.service_name, "X");
+  assert.strictEqual(pluginConfig.default_service_name_visibility, "visible");
+  assert.strictEqual(pluginConfig.service_name, "X · Following Feed");
   assert.match(source, /videoPreviewHtml/);
   assert.match(source, /embedTweetMediaThumbnails/);
   assert.match(source, /mediaFromFxTwitterStatus/);
@@ -582,12 +582,12 @@ async function run() {
     tweetId: "1950000000000000001",
     url: "https://x.com/openai/status/1950000000000000001"
   });
-  assert.match(item.actions._connectorBuild, /2026-09-01T06:30Z-1.4.9-hide-service@plugin63@1.4.9/);
+  assert.match(item.actions._connectorBuild, /2026-09-01T06:40Z-1.4.10-service-feed-name@plugin64@1.4.10/);
   assert.ok(item.actions._timelineAvatarRaw);
   assert.match(item.actions._authorAvatarInput, /^data:\d+$/);
   assert.match(item.actions._authorAvatarAssigned, /^data:\d+$/);
   assert.match(item.actions._authorAvatarLookup, /^(timeline|profile)\+embed$/);
-  assert.match(item.body, /<!-- local\.x\.timeline 2026-09-01T06:30Z-1.4.9-hide-service@plugin63@1.4.9 -->/);
+  assert.match(item.body, /<!-- local\.x\.timeline 2026-09-01T06:40Z-1.4.10-service-feed-name@plugin64@1.4.10 -->/);
   assert.ok(Number(item.actions._bodyAnchorCount) >= 1);
   assert.ok(Number(item.actions._externalUrlCount) >= 1);
   assert.match(item.actions._urlApi, /^(ok|missing)$/);
@@ -611,8 +611,8 @@ async function run() {
     "normal posts should not duplicate author as a small annotation chip"
   );
   assert.ok(
-    item.annotations.some(annotation => annotation.text === "X · @openai, @sama"),
-    "feed type should appear as a native annotation above Service"
+    !item.annotations || !item.annotations.some(annotation => /X · /.test(annotation.text || "")),
+    "feed type belongs in Service chrome, not a small annotation"
   );
   assert.strictEqual(item.author.username, "@openai");
   assert.match(item.author.uri, /https:\/\/x\.com\/openai/);
@@ -754,8 +754,8 @@ async function run() {
   assert.ifError(following.error);
   assert.strictEqual(following.results.length, 1);
   assert.ok(
-    following.results[0].annotations.some(annotation => annotation.text === "X · Following Feed"),
-    "Following items should annotate feed type above Service"
+    !following.results[0].annotations || !following.results[0].annotations.some(annotation => annotation.text === "X · Following Feed"),
+    "feed type should not also appear as a small annotation"
   );
   assert.strictEqual(following.results[0].author.username, "@verge");
   assert.match(following.results[0].author.avatar, /^data:image\/jpeg;base64,/);
@@ -1911,12 +1911,9 @@ async function run() {
   assert.match(repost.results[0].annotations.find(a => /Reposted/.test(a.text)).icon, /^data:image\/jpeg;base64,/);
   assert.strictEqual(repost.results[0].annotations.find(a => /Reposted/.test(a.text)).uri, "https://x.com/podo");
   assert.ok(
-    repost.results[0].annotations.some(annotation => annotation.text === "X · @openai, @sama"),
-    "retweets should still include feed-type annotation"
+    !repost.results[0].annotations.some(annotation => /X · /.test(annotation.text || "")),
+    "retweets should not add a feed-type annotation chip"
   );
-  const repostFeedIndex = repost.results[0].annotations.findIndex(a => a.text === "X · @openai, @sama");
-  const repostedIndex = repost.results[0].annotations.findIndex(a => /Reposted/.test(a.text));
-  assert.ok(repostedIndex >= 0 && repostFeedIndex > repostedIndex, "feed type should follow Reposted annotation");
 
   const threadContext = makeContext({
     threadTimeline: tweetDetailBody([
