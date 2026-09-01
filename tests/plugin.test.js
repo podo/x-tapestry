@@ -460,8 +460,8 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 64);
-  assert.match(source, /connectorBuildId = "2026-09-01T06:40Z-1.4.10-service-feed-name"/);
+  assert.strictEqual(pluginConfig.version, 65);
+  assert.match(source, /connectorBuildId = "2026-09-01T07:05Z-1.4.11-swipe-thread"/);
   assert.strictEqual(pluginConfig.default_color, "slate");
   assert.strictEqual(pluginConfig.default_service_name_visibility, "visible");
   assert.strictEqual(pluginConfig.service_name, "X · Following Feed");
@@ -510,9 +510,9 @@ async function run() {
   assert.ok(actions.items.some(action => action.id === "bookmark" && action.icon === "tapestry.bookmark"));
   assert.ok(actions.items.some(action => action.id === "unbookmark" && action.icon === "tapestry.bookmark.fill"));
   assert.ok(actions.items.some(action => action.id === "openLink" && action.icon === "tapestry.open.original"));
-  assert.ok(actions.items.some(action => action.id === "openQuote" && action.role === "context"));
+  assert.ok(!actions.items.some(action => action.id === "openQuote"));
   assert.ok(actions.items.some(action => action.id === "votePoll"));
-  assert.ok(actions.items.some(action => action.id === "thread" && action.role === "context"));
+  assert.ok(actions.items.some(action => action.id === "thread" && action.role === "context" && action.icon === "bubble.left.and.bubble.right"));
   assert.match(source, /assertSessionHealthy/);
   assert.match(source, /bookmarksTimelinePage/);
   assert.match(source, /mapPool/);
@@ -582,12 +582,12 @@ async function run() {
     tweetId: "1950000000000000001",
     url: "https://x.com/openai/status/1950000000000000001"
   });
-  assert.match(item.actions._connectorBuild, /2026-09-01T06:40Z-1.4.10-service-feed-name@plugin64@1.4.10/);
+  assert.match(item.actions._connectorBuild, /2026-09-01T07:05Z-1.4.11-swipe-thread@plugin65@1.4.11/);
   assert.ok(item.actions._timelineAvatarRaw);
   assert.match(item.actions._authorAvatarInput, /^data:\d+$/);
   assert.match(item.actions._authorAvatarAssigned, /^data:\d+$/);
   assert.match(item.actions._authorAvatarLookup, /^(timeline|profile)\+embed$/);
-  assert.match(item.body, /<!-- local\.x\.timeline 2026-09-01T06:40Z-1.4.10-service-feed-name@plugin64@1.4.10 -->/);
+  assert.match(item.body, /<!-- local\.x\.timeline 2026-09-01T07:05Z-1.4.11-swipe-thread@plugin65@1.4.11 -->/);
   assert.ok(Number(item.actions._bodyAnchorCount) >= 1);
   assert.ok(Number(item.actions._externalUrlCount) >= 1);
   assert.match(item.actions._urlApi, /^(ok|missing)$/);
@@ -665,6 +665,7 @@ async function run() {
   assert.ifError(context.error);
   assert.strictEqual(context.results.length, 1);
   assert.strictEqual(context.results[0].uri, "https://x.com/openai/status/1950000000000000003");
+  assert.ok(!context.results[0].actions.thread, "standalone posts with 0 replies should not get a thread swipe action");
   const nextState = JSON.parse(context._state.get("syncStateV20"));
   assert.strictEqual(nextState.highWaterBySource["handle:openai"], "1950000000000000003");
   assert.strictEqual(nextState.highWaterBySource["handle:sama"], "1950000000000000003");
@@ -1806,6 +1807,7 @@ async function run() {
   assert.match(quoted.results[0].attachments[0].author.avatar, /^data:image\/jpeg;base64,/);
   assert.match(quoted.results[0].attachments[0].body, /Quoted text/);
   assert.doesNotMatch(quoted.results[0].body, /Quoted text/);
+  assert.ok(!quoted.results[0].actions.openQuote, "quoted posts should not add a swipe action that collides with View original");
 
   const poll = makeContext({
     timeline: timelineBody([
@@ -1862,6 +1864,7 @@ async function run() {
         fullText: "@ndrewpignanelli @kayacancode Users may not, but for audit purposes there needs to be UI for it.",
         in_reply_to_status_id_str: "1950000000000000010",
         in_reply_to_screen_name: "ndrewpignanelli",
+        reply_count: 0,
         legacy: { extended_entities: { media: [] }, entities: { urls: [] } }
       })
     ])
@@ -1872,6 +1875,7 @@ async function run() {
   assert.match(replyMentions.results[0].body, /Users may not, but for audit purposes/);
   assert.doesNotMatch(replyMentions.results[0].body, /@ndrewpignanelli/);
   assert.doesNotMatch(replyMentions.results[0].body, /@kayacancode/);
+  assert.ok(replyMentions.results[0].actions.thread, "replies should keep a thread swipe action even with 0 reply_count");
   assert.strictEqual(replyMentions.results[0].annotations.find(a => /^Reply/.test(a.text)).text, "Reply to @ndrewpignanelli");
 
   const repost = makeContext({

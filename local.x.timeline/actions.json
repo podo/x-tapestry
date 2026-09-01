@@ -36,12 +36,6 @@
       "icon": "tapestry.open.original"
     },
     {
-      "id": "openQuote",
-      "name": "Quoted Post",
-      "icon": "tapestry.view.details",
-      "role": "context"
-    },
-    {
       "id": "votePoll",
       "name": "Vote (choice 1)",
       "icon": "checklist"

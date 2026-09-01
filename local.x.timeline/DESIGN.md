@@ -22,7 +22,7 @@
 - Individual Accounts reads one or more configured handles. Search Query reads X search results with the configured filters and ranking.
 - Initial loads are bounded by the configured batch size. Incremental refresh uses the persisted high-water mark and stops after the connector's bounded page limit or a known item.
 - Verify/load probes account settings first and fails with a clear re-paste-cookies message on expired sessions.
-- Card actions: like/unlike, repost/unrepost, bookmark/unbookmark, openLink, votePoll (card_update; default choice 1 in the action payload), openQuote (context), thread (context).
+- Card actions: like/unlike, repost/unrepost, bookmark/unbookmark, openLink, votePoll (card_update; default choice 1 in the action payload), thread (context, only when the post is a reply or `replies > 0`). Do not emit `openQuote`; quoted posts stay as attachments so swipe-left View original is not duplicated. Native View original (`tapestry.view.details`) is Tapestry chrome and stays.
 - Collection feeds keep the X service icon; a single-account feed may use that account's avatar for identification.
 
 ## Deferred (not in 1.4.0)
@@ -38,5 +38,5 @@
 - Verify media/card placeholder URLs are absent from the body when a native attachment renders.
 - Verify body links are blue `<a href>` and diagnostics show `_bodyAnchorCount` ≥ 1 when URLs exist.
 - Verify For You / Following / Bookmarks / List / Mentions modes and their verify display names.
-- Verify bookmark toggles and openQuote/thread context actions.
+- Verify bookmark toggles and thread context action (gated to replies/conversations).
 - Verify expired cookies surface a re-paste message on Verify.

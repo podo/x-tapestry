@@ -35,7 +35,7 @@ re-run the cookie helper (or re-copy cookies) and Verify again.
 
 - Zero per-tweet cost through an authenticated `x.com` web session
 - For You, Following, Bookmarks, List, Mentions, Individual Accounts, and Search feeds
-- Like, repost, bookmark, open link, open quoted post, poll vote (choice 1 default), and thread actions
+- Like, repost, bookmark, open link, poll vote (choice 1 default), and thread (when the post is a reply or has replies)
 - Individual Accounts mode using comma-separated X profile timelines
 - Raw X search query feeds for advanced filters
 - Feed Finder support for `@handle`, `x.com`, and `twitter.com` inputs

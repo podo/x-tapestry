@@ -10,6 +10,7 @@
 - Auth UI/credentials: `auth_token` + `ct0` only—do not expose or require a raw Cookie Header field.
 - Prefer feed type above author as native Service chrome (`service_name` `X · Following Feed`), not an annotation — annotations render at Reply-to size, smaller than Service. Keep `default_service_name_visibility: "visible"`. Verify/feed list titles still use dynamic `X · …`. `service_name` is static for the whole connector (cannot follow `source_mode`).
 - Chronological thread ordering applies only when opening a thread via the thread action icon—not for ordinary item/detail navigation.
+- Swipe-left: keep native View original; emit `thread` only for replies or `replies > 0`; do not emit `openQuote` (it collided with View original via `tapestry.view.details`). Quotes stay as attachments.
 - Retweet chrome: omit the small annotation avatar/@handle on non-retweets; for retweets, annotation is `Reposted by @reposter` and the main `Identity` is the original author.
 - Card stack: reply/repost annotations then Service (`X · Following Feed`); then Author → body/attachments/actions; engagement metrics in `<small>` (same scale as reply-to chrome).
 

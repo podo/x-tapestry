@@ -27,9 +27,9 @@ const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xn
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
 const syncStateKey = "syncStateV20";
-const connectorBuildId = "2026-09-01T06:40Z-1.4.10-service-feed-name";
-const connectorRelease = "1.4.10";
-const connectorPluginVersion = 64;
+const connectorBuildId = "2026-09-01T07:05Z-1.4.11-swipe-thread";
+const connectorRelease = "1.4.11";
+const connectorPluginVersion = 65;
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
@@ -4189,13 +4189,7 @@ function tweetActions(tweet, bodyHtml) {
     tweetId: tweet.id,
     url: tweet.url
   });
-  actions.thread = payload;
-  if (tweet.quoted && tweet.quoted.id) {
-    actions.openQuote = JSON.stringify({
-      tweetId: tweet.quoted.id,
-      url: tweet.quoted.url || ""
-    });
-  }
+  if (tweetHasConversation(tweet)) actions.thread = payload;
   if (tweet.poll && tweet.poll.cardUri) {
     actions.votePoll = JSON.stringify({
       tweetId: tweet.id,
@@ -4234,6 +4228,10 @@ function tweetActions(tweet, bodyHtml) {
   }
 
   return actions;
+}
+
+function tweetHasConversation(tweet) {
+  return Boolean(tweet && (tweet.isReply || finiteNumber(tweet.replies) > 0));
 }
 
 function engagementActionsForTweet(tweet) {
