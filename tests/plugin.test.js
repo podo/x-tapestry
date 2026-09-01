@@ -460,8 +460,8 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 60);
-  assert.match(source, /connectorBuildId = "2026-08-31T22:05Z-1.4.6-service-visible"/);
+  assert.strictEqual(pluginConfig.version, 61);
+  assert.match(source, /connectorBuildId = "2026-08-31T22:25Z-1.4.7-load-budget"/);
   assert.strictEqual(pluginConfig.default_color, "slate");
   assert.strictEqual(pluginConfig.default_service_name_visibility, "visible");
   assert.strictEqual(pluginConfig.service_name, "X");
@@ -516,6 +516,8 @@ async function run() {
   assert.match(source, /assertSessionHealthy/);
   assert.match(source, /bookmarksTimelinePage/);
   assert.match(source, /mapPool/);
+  assert.match(source, /loadTimeBudgetMilliseconds/);
+  assert.match(source, /loadTweetDetailForTweet/);
   assert.match(source, /seenTweetIds/);
   assert.ok(apps.apps.some(app => app.name === "X" && app.template === "__URL__"));
   assert.strictEqual("@openai".match(regexFromPattern(discovery.input[0].match))[1], "openai");
@@ -580,12 +582,12 @@ async function run() {
     tweetId: "1950000000000000001",
     url: "https://x.com/openai/status/1950000000000000001"
   });
-  assert.match(item.actions._connectorBuild, /2026-08-31T22:05Z-1.4.6-service-visible@plugin60@1.4.6/);
+  assert.match(item.actions._connectorBuild, /2026-08-31T22:25Z-1.4.7-load-budget@plugin61@1.4.7/);
   assert.ok(item.actions._timelineAvatarRaw);
   assert.match(item.actions._authorAvatarInput, /^data:\d+$/);
   assert.match(item.actions._authorAvatarAssigned, /^data:\d+$/);
   assert.match(item.actions._authorAvatarLookup, /^(timeline|profile)\+embed$/);
-  assert.match(item.body, /<!-- local\.x\.timeline 2026-08-31T22:05Z-1.4.6-service-visible@plugin60@1.4.6 -->/);
+  assert.match(item.body, /<!-- local\.x\.timeline 2026-08-31T22:25Z-1.4.7-load-budget@plugin61@1.4.7 -->/);
   assert.ok(Number(item.actions._bodyAnchorCount) >= 1);
   assert.ok(Number(item.actions._externalUrlCount) >= 1);
   assert.match(item.actions._urlApi, /^(ok|missing)$/);
