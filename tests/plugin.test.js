@@ -460,8 +460,8 @@ async function run() {
 
   assert.strictEqual(pluginConfig.provides_attachments, true);
   assert.strictEqual(pluginConfig.minimum_app_version, "1.4");
-  assert.strictEqual(pluginConfig.version, 65);
-  assert.match(source, /connectorBuildId = "2026-09-01T07:05Z-1.4.11-swipe-thread"/);
+  assert.strictEqual(pluginConfig.version, 66);
+  assert.match(source, /connectorBuildId = "2026-09-05T10:30Z-1.4.12-load-perf"/);
   assert.strictEqual(pluginConfig.default_color, "slate");
   assert.strictEqual(pluginConfig.default_service_name_visibility, "visible");
   assert.strictEqual(pluginConfig.service_name, "X · Following Feed");
@@ -582,12 +582,12 @@ async function run() {
     tweetId: "1950000000000000001",
     url: "https://x.com/openai/status/1950000000000000001"
   });
-  assert.match(item.actions._connectorBuild, /2026-09-01T07:05Z-1.4.11-swipe-thread@plugin65@1.4.11/);
+  assert.match(item.actions._connectorBuild, /2026-09-05T10:30Z-1.4.12-load-perf@plugin66@1.4.12/);
   assert.ok(item.actions._timelineAvatarRaw);
   assert.match(item.actions._authorAvatarInput, /^data:\d+$/);
   assert.match(item.actions._authorAvatarAssigned, /^data:\d+$/);
   assert.match(item.actions._authorAvatarLookup, /^(timeline|profile)\+embed$/);
-  assert.match(item.body, /<!-- local\.x\.timeline 2026-09-01T07:05Z-1.4.11-swipe-thread@plugin65@1.4.11 -->/);
+  assert.match(item.body, /<!-- local\.x\.timeline 2026-09-05T10:30Z-1.4.12-load-perf@plugin66@1.4.12 -->/);
   assert.ok(Number(item.actions._bodyAnchorCount) >= 1);
   assert.ok(Number(item.actions._externalUrlCount) >= 1);
   assert.match(item.actions._urlApi, /^(ok|missing)$/);
@@ -1189,6 +1189,154 @@ async function run() {
   assert.match(previewCall.headers.Accept, /text\/html/);
   const previewCache = JSON.parse(unfurled._state.get("linkPreviewCacheV1"));
   assert.strictEqual(previewCache["https://example.com/preview"].preview.title, "Preview title");
+
+  const blockedPreviewUrl = "https://www.nytimes.com/blocked-article";
+  const blockedPreview = makeContext({
+    x_sources: "openai",
+    timeline: timelineBody([
+      tweetResult({
+        id: "1950000000000000031",
+        fullText: "Read https://t.co/blocked",
+        legacy: {
+          entities: {
+            urls: [
+              urlEntity("https://t.co/blocked", blockedPreviewUrl, "nytimes.com/blocked")
+            ]
+          },
+          extended_entities: { media: [] }
+        }
+      })
+    ]),
+    linkPreviews: {
+      [blockedPreviewUrl]: JSON.stringify({ status: 403, headers: {}, body: "" })
+    }
+  });
+  vm.runInContext("load()", blockedPreview);
+  await settle();
+  assert.ifError(blockedPreview.error);
+  const blockedPreviewCalls = blockedPreview._calls.filter(call => call.url === blockedPreviewUrl);
+  assert.strictEqual(blockedPreviewCalls.length, 1, "first load should attempt the blocked preview once");
+  const blockedPreviewCache = JSON.parse(blockedPreview._state.get("linkPreviewCacheV1"));
+  assert.strictEqual(blockedPreviewCache[blockedPreviewUrl].negative, true);
+
+  blockedPreview.timeline = timelineBody([
+    tweetResult({
+      id: "1950000000000000032",
+      fullText: "Another https://t.co/blocked",
+      legacy: {
+        entities: {
+          urls: [
+            urlEntity("https://t.co/blocked", blockedPreviewUrl, "nytimes.com/blocked")
+          ]
+        },
+        extended_entities: { media: [] }
+      }
+    })
+  ]);
+  const blockedPreviewCallStart = blockedPreview._calls.length;
+  vm.runInContext("load()", blockedPreview);
+  await settle();
+  assert.ifError(blockedPreview.error);
+  const blockedPreviewRetryCalls = blockedPreview._calls
+    .slice(blockedPreviewCallStart)
+    .filter(call => call.url === blockedPreviewUrl);
+  assert.strictEqual(blockedPreviewRetryCalls.length, 0, "cached preview failures should not refetch");
+
+  const sharedSyncState = new Map();
+  const syncPersistence = makeContext({
+    source_mode: "Following Feed",
+    fetch_link_previews: "on",
+    getItem: key => sharedSyncState.get(key) || null,
+    setItem: (key, value) => sharedSyncState.set(key, value),
+    homeTimeline: homeTimelineBody([
+      tweetResult({ id: "1950000000000000200", username: "verge", name: "The Verge" })
+    ])
+  });
+  vm.runInContext("load()", syncPersistence);
+  await settle();
+  assert.ifError(syncPersistence.error);
+  assert.deepStrictEqual(
+    JSON.parse(sharedSyncState.get("syncStateV20")).highWaterBySource.following,
+    "1950000000000000200"
+  );
+
+  syncPersistence.fetch_link_previews = "off";
+  syncPersistence.show_metrics = "off";
+  syncPersistence.batch_size = "100";
+  syncPersistence.homeTimeline = homeTimelineBody([
+    tweetResult({ id: "1950000000000000200", username: "verge", name: "The Verge" })
+  ]);
+  vm.runInContext("load()", syncPersistence);
+  await settle();
+  assert.ifError(syncPersistence.error);
+  assert.strictEqual(syncPersistence.results.length, 0);
+  assert.deepStrictEqual(
+    JSON.parse(sharedSyncState.get("syncStateV20")).highWaterBySource.following,
+    "1950000000000000200",
+    "enrichment toggles should not reset following high-water sync"
+  );
+
+  const avatarReuse = makeContext({
+    source_mode: "Following Feed",
+    show_media: "off",
+    fetch_link_previews: "off",
+    homeTimeline: homeTimelineBody([
+      tweetResult({
+        id: "1950000000000000300",
+        username: "verge",
+        name: "The Verge",
+        profile_image_url: "",
+        avatar: { image_url: "https://pbs.twimg.com/profile_images/7/verge_normal.jpg" },
+        legacy: {
+          entities: { urls: [] },
+          extended_entities: { media: [] }
+        }
+      })
+    ])
+  });
+  vm.runInContext("load()", avatarReuse);
+  await settle();
+  assert.ifError(avatarReuse.error);
+  assert.match(avatarReuse.results[0].author.avatar, /^data:image\/jpeg;base64,/);
+  const avatarTwimgCache = JSON.parse(avatarReuse._state.get("avatarTwimgCacheV1"));
+  const avatarTwimgCacheKey = "https://pbs.twimg.com/profile_images/7/verge_400x400.jpg";
+  assert.ok(
+    avatarTwimgCache[avatarTwimgCacheKey],
+    "first load should persist the embedded twimg avatar"
+  );
+
+  const avatarReuseCallStart = avatarReuse._calls.length;
+  avatarReuse.homeTimeline = homeTimelineBody([
+    tweetResult({
+      id: "1950000000000000301",
+      username: "verge",
+      name: "The Verge",
+      profile_image_url: "",
+      avatar: { image_url: "https://pbs.twimg.com/profile_images/7/verge_normal.jpg" },
+      legacy: {
+        entities: { urls: [] },
+        extended_entities: { media: [] }
+      }
+    }),
+    tweetResult({
+      id: "1950000000000000300",
+      username: "verge",
+      name: "The Verge",
+      profile_image_url: "",
+      avatar: { image_url: "https://pbs.twimg.com/profile_images/7/verge_normal.jpg" },
+      legacy: {
+        entities: { urls: [] },
+        extended_entities: { media: [] }
+      }
+    })
+  ]);
+  vm.runInContext("load()", avatarReuse);
+  await settle();
+  assert.ifError(avatarReuse.error);
+  const avatarReuseTwimgCalls = avatarReuse._calls
+    .slice(avatarReuseCallStart)
+    .filter(call => call.url.includes("pbs.twimg.com/"));
+  assert.strictEqual(avatarReuseTwimgCalls.length, 0, "persisted avatars should skip repeat twimg fetches");
 
   const video = makeContext({
     timeline: timelineBody([
