@@ -27,13 +27,15 @@ const defaultBearerToken = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xn
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const accountSettingsUrl = "https://x.com/i/api/1.1/account/settings.json?include_mention_filter=true&include_nsfw_user_flag=true&include_nsfw_admin_flag=true&include_ranked_timeline=true&include_alt_text_compose=true";
 const syncStateKey = "syncStateV20";
-const connectorBuildId = "2026-09-01T07:05Z-1.4.11-swipe-thread";
-const connectorRelease = "1.4.11";
-const connectorPluginVersion = 65;
+const connectorBuildId = "2026-09-05T10:30Z-1.4.12-load-perf";
+const connectorRelease = "1.4.12";
+const connectorPluginVersion = 66;
 const transactionCacheKey = "transactionCacheV1";
 const queryIdCacheKey = "queryIdCacheV1";
 const linkPreviewCacheKey = "linkPreviewCacheV1";
 const avatarCacheKey = "avatarCacheV1";
+const avatarTwimgCacheKey = "avatarTwimgCacheV1";
+const maximumAvatarTwimgCacheEntries = 500;
 const cardCacheKey = "cardCacheV1";
 const transactionCacheTtlMilliseconds = 15 * 60 * 1000;
 const queryIdCacheTtlMilliseconds = 24 * 60 * 60 * 1000;
@@ -687,7 +689,7 @@ function canFetchTweetDetail() {
 
 function shortRequestError(error) {
   if (!error) return "unknown";
-  const status = error.status || error.statusCode;
+  const status = error.status || error.statusCode || error.xStatus;
   if (status) return String(status);
   const message = String(error.message || error).trim();
   return message ? message.slice(0, 48).replace(/\s+/g, "-") : "unknown";
@@ -872,6 +874,51 @@ function persistedAvatarForHandle(handle) {
   return entry;
 }
 
+function isEmbeddedDataUrl(value) {
+  return String(value || "").startsWith("data:image/");
+}
+
+function readPersistedAvatarTwimgCache() {
+  try {
+    const raw = safeGetItem(avatarTwimgCacheKey);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  }
+  catch (error) {
+    return {};
+  }
+}
+
+function writePersistedAvatarTwimgEntry(url, dataUrl) {
+  const key = normalizedAvatar(url);
+  if (!key || !isEmbeddedDataUrl(dataUrl)) return;
+
+  const cache = readPersistedAvatarTwimgCache();
+  cache[key] = {
+    dataUrl,
+    at: Date.now()
+  };
+
+  const keys = Object.keys(cache);
+  if (keys.length > maximumAvatarTwimgCacheEntries) {
+    keys.sort((left, right) => (cache[left].at || 0) - (cache[right].at || 0));
+    for (let index = 0; index < keys.length - maximumAvatarTwimgCacheEntries; index += 1) {
+      delete cache[keys[index]];
+    }
+  }
+
+  safeSetItem(avatarTwimgCacheKey, JSON.stringify(cache));
+}
+
+function persistedAvatarDataUrlForTwimgUrl(url) {
+  const key = normalizedAvatar(url);
+  if (!key) return null;
+  const entry = readPersistedAvatarTwimgCache()[key];
+  if (!entry || !isEmbeddedDataUrl(entry.dataUrl)) return null;
+  return entry.dataUrl;
+}
+
 async function avatarFromFxTwitter(handle) {
   const username = sanitizeHandle(handle);
   if (!username) return null;
@@ -916,11 +963,31 @@ function shouldEmbedAvatarUrl(url) {
   return Boolean(host && /\.twimg\.com$/i.test(host));
 }
 
-async function avatarDataUrlForUrl(url) {
+async function avatarDataUrlForUrl(url, username) {
   const normalized = normalizedAvatar(url);
   if (!normalized || !shouldEmbedAvatarUrl(normalized)) return normalized;
+  if (isEmbeddedDataUrl(normalized)) return normalized;
   if (!loadAvatarDataUrlCache) resetAvatarCache();
   if (loadAvatarDataUrlCache.has(normalized)) return loadAvatarDataUrlCache.get(normalized);
+
+  if (username) {
+    const persisted = persistedAvatarForHandle(username);
+    if (persisted && isEmbeddedDataUrl(persisted.avatar)) {
+      loadAvatarDataUrlCache.set(normalized, persisted.avatar);
+      return persisted.avatar;
+    }
+  }
+
+  const persistedByUrl = persistedAvatarDataUrlForTwimgUrl(normalized);
+  if (persistedByUrl) {
+    loadAvatarDataUrlCache.set(normalized, persistedByUrl);
+    return persistedByUrl;
+  }
+
+  if (loadBudgetExceeded()) {
+    loadAvatarDataUrlCache.set(normalized, normalized);
+    return normalized;
+  }
 
   try {
     const text = await sendRequest(normalized, "GET", null, {
@@ -943,6 +1010,7 @@ async function avatarDataUrlForUrl(url) {
 
     const dataUrl = `data:${mime};base64,${bytesToBase64(bytes)}`;
     loadAvatarDataUrlCache.set(normalized, dataUrl);
+    writePersistedAvatarTwimgEntry(normalized, dataUrl);
     return dataUrl;
   }
   catch (error) {
@@ -955,10 +1023,10 @@ async function embedTweetAvatars(tweet) {
   if (!tweet) return;
 
   if (tweet.authorAvatar) {
-    tweet.authorAvatar = await avatarDataUrlForUrl(tweet.authorAvatar);
+    tweet.authorAvatar = await avatarDataUrlForUrl(tweet.authorAvatar, tweet.authorUsername);
   }
   if (tweet.repostedByAvatar) {
-    tweet.repostedByAvatar = await avatarDataUrlForUrl(tweet.repostedByAvatar);
+    tweet.repostedByAvatar = await avatarDataUrlForUrl(tweet.repostedByAvatar, tweet.repostedByUsername);
   }
   if (tweet.quoted) await embedTweetAvatars(tweet.quoted);
 }
@@ -1214,7 +1282,7 @@ function videoPosterUrl(media) {
 }
 
 async function embedTweetMediaThumbnails(tweet) {
-  if (!tweet || !Array.isArray(tweet.media)) return;
+  if (!tweet || !Array.isArray(tweet.media) || loadBudgetExceeded()) return;
   for (const media of tweet.media) {
     if (media.thumbnail && shouldEmbedAvatarUrl(media.thumbnail)) {
       media.thumbnail = await avatarDataUrlForUrl(normalizedPhotoUrl(media.thumbnail));
@@ -3960,6 +4028,7 @@ function linkCardForTweet(tweet) {
 
 async function linkPreviewForUrl(url) {
   if (!isExternalWebUrl(url)) return null;
+  if (isLinkPreviewFailureCached(url)) return null;
 
   const cached = readLinkPreview(url);
   if (cached) return cached;
@@ -3972,12 +4041,44 @@ async function linkPreviewForUrl(url) {
       writeLinkPreview(url, preview);
       return preview;
     }
+    writeLinkPreviewFailure(url, "no-metadata");
   }
   catch (error) {
+    if (shouldNegativeCacheLinkPreviewError(error)) {
+      writeLinkPreviewFailure(url, shortRequestError(error));
+    }
     console.log(`Unable to fetch link preview for ${url}: ${error.message || error}`);
   }
 
   return null;
+}
+
+function shouldNegativeCacheLinkPreviewError(error) {
+  const status = error && (error.status || error.statusCode || error.xStatus);
+  if (status === 401 || status === 403 || status === 404 || status === 410 || status === 429) return true;
+  const message = String(error && (error.message || error) || "").toLowerCase();
+  return message.includes("timeout")
+    || message.includes("timed out")
+    || message.includes("certificate")
+    || /\bhttp\s+(401|403|404|410|429)\b/.test(message);
+}
+
+function isLinkPreviewFailureCached(url) {
+  const cache = readLinkPreviewCache();
+  const entry = cache[linkPreviewCacheUrl(url)];
+  if (!entry || !entry.negative) return false;
+  if (!entry.builtAt || Date.now() - Number(entry.builtAt) >= linkPreviewCacheTtlMilliseconds) return false;
+  return true;
+}
+
+function writeLinkPreviewFailure(url, reason) {
+  const cache = readLinkPreviewCache();
+  cache[linkPreviewCacheUrl(url)] = {
+    builtAt: Date.now(),
+    negative: true,
+    reason: reason || "failed"
+  };
+  safeSetItem(linkPreviewCacheKey, JSON.stringify(pruneLinkPreviewCache(cache)));
 }
 
 function linkPreviewHeaders() {
@@ -4119,9 +4220,9 @@ function pruneLinkPreviewCache(cache) {
     .map(key => ({ key, entry: cache[key] }))
     .filter(item => (
       item.entry
-      && item.entry.preview
       && item.entry.builtAt
       && now - Number(item.entry.builtAt) < linkPreviewCacheTtlMilliseconds
+      && (item.entry.preview || item.entry.negative)
     ))
     .sort((left, right) => Number(right.entry.builtAt) - Number(left.entry.builtAt))
     .slice(0, maximumLinkPreviewCacheEntries);
@@ -4281,11 +4382,6 @@ function currentSyncSignature(query) {
     searchFilters: normalizedSourceMode() === "search query" ? stringInput("query_suffix").trim() : "",
     includeReplies: includeReplies(),
     includeRetweets: includeRetweets(),
-    showMetrics: showMetrics(),
-    showMedia: showMedia(),
-    showLinkCards: showLinkCards(),
-    fetchLinkPreviews: fetchLinkPreviews(),
-    batchSize: normalizedBatchSize(),
     homeLatestTimelineQueryId: normalizedHomeLatestTimelineQueryId(),
     homeTimelineQueryId: normalizedHomeTimelineQueryId(),
     bookmarksQueryId: normalizedBookmarksQueryId(),
